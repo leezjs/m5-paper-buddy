@@ -23,7 +23,7 @@
 
 ## ✨ 简介
 
-用一块 **PaperS3**（4.7" 电子墨水屏 / 540×960 / 触摸 / ESP32-S3）做你的 Claude Code 伴侣屏。开着多个 Claude Code 窗口的时候，这块墨水屏会**实时镜像**每个 session 的项目、分支、上下文占用、最新回复和活动日志。Claude 要调用工具时，完整的命令 / diff / 内容会**全屏弹出**等你在**硬件按键**或**触屏**上确认。
+用一块 **PaperS3**（4.7" 电子墨水屏 / 540×960 / 触摸 / ESP32-S3）做你的 Claude Code 伴侣屏。开着多个 Claude Code 窗口的时候，这块墨水屏会**实时镜像**每个 session 的项目、分支、上下文占用、最新回复和活动日志。Claude 要调用工具时，完整的命令 / diff / 内容会**全屏弹出**，等你在屏幕上的触控操作区里确认。
 
 ---
 
@@ -32,12 +32,13 @@
 | | |
 | --- | --- |
 | 📊 **多会话 Dashboard** | 左列显示所有在跑的 Claude Code 窗口，点一下切换 focus；右列显示 model + 上下文窗口占用进度条 |
-| 🔐 **硬件审批** | `PreToolUse` 全屏审批卡，完整显示 Bash 命令 / Edit diff / Write 预览。PUSH 同意、DOWN 拒绝；DND 模式（长按 UP）自动批准 |
+| 🔐 **触控审批** | `PreToolUse` 全屏审批卡，完整显示 Bash 命令 / Edit diff / Write 预览；在屏幕下方 `A / B / C` 触控区里完成同意 / 拒绝 / 关闭 |
 | 💬 **触屏回答** | `AskUserQuestion` 最多 4 个选项做成**大按钮**，点一下选项 label 直接回传给 Claude |
 | 🔁 **FIFO 队列** | 多个窗口同时请求审批时，一次弹一个，当前处理完自动弹下一个 |
-| 🀄 **中英双语** | 内置 3.4MB CJK TTF，UI 支持 EN / 中文 切换（设置页里点）；所有 prompt / 回复 / 活动都能显示中文 |
+| 🀄 **中英双语** | 内置 CJK 字体与 UTF-8 文本渲染，UI 支持 EN / 中文 切换；所有 prompt / 回复 / 活动都能显示中文 |
 | 🔌 **双 Transport** | USB 串口（默认、零配置）或 BLE（Nordic UART、macOS 配对 passkey），自动选择 |
-| ⚙️ **设置页** | 右上角点 `SETTINGS` / `设置`，查看 transport、电量、会话数、DND、预算、运行时长、最后消息 |
+| ↔️ **横竖版切换** | `Settings` 里可在 **Landscape / Portrait** 之间切换，立即生效并写入 NVS，重启后保持 |
+| ⚙️ **设置页** | 右上角点 `SETTINGS` / `设置`，查看 transport、电量、会话数、DND、预算、运行时长、最后消息；底部 `LANG / LAYOUT / CLOSE` 三段触摸条负责切语言、切布局、关闭页面 |
 | 🐱 **猫伙伴** | 底部一只 ASCII 猫跟状态变化表情（idle/busy/attention/celebrate/DND/sleep） |
 | 🔌 **Claude Code 插件** | 一条 `/buddy-install` 搞定 PlatformIO + Python 依赖 + mklittlefs 架构补丁 + hooks 合并 + 固件/字体刷录 + daemon 后台启动 |
 
@@ -56,7 +57,7 @@
 
 ```bash
 # 克隆
-git clone https://github.com/op7418/m5-paper-buddy.git
+git clone https://github.com/leezjs/m5-paper-buddy.git
 cd m5-paper-buddy
 
 # 作为 Claude Code 插件安装（推荐）
@@ -104,16 +105,15 @@ python3 tools/claude_code_bridge.py --budget 200000
 
 ---
 
-## ⌨️ 控制
+## ⌨️ 触控交互
 
-| 按键 / 区域 | Dashboard 状态页 | 审批卡片 |
-| --- | --- | --- |
-| **PUSH**（中） | 触发一次重绘 | **同意** |
-| **DOWN**（下） | 切换 demo 模式 | **拒绝** |
-| **UP**（上） | 短按：强制 GC16 全刷（清残影）· 长按 1.5s：切换 **DND 勿扰** | — |
-| 点会话行 | 切换 dashboard focus 到该 session | — |
-| 点右上 `SETTINGS` | 打开设置页 | — |
-| 点选项卡片 | — | 回答 `AskUserQuestion` |
+| 页面 / 区域 | 操作 |
+| --- | --- |
+| Dashboard | 点会话行切换当前 focus；点右上 `SETTINGS` / `设置` 打开设置页 |
+| Settings | 优先使用底部三段触摸条：`LANG` 切中英文，`LAYOUT` 切横版 / 竖版，`CLOSE` 关闭设置页 |
+| Permission 卡片 | 使用屏幕下方 `A / B` 操作区进行同意 / 拒绝；卡片会显示当前工具、来源 session 和完整内容 |
+| Question 卡片 | 直接点大按钮回答 `AskUserQuestion` |
+| BLE 配对页 | 屏幕会显示 6 位 passkey，在电脑弹窗里输入即可 |
 
 ---
 
@@ -146,7 +146,11 @@ BUDDY_BUDGET=1000000 /buddy-start
 
 ## 🌐 语言切换
 
-默认英文。点 `SETTINGS` → 第一行 **language / 语言** → 切换到中文。选择写入 NVS，重启保留。
+默认英文。点 `SETTINGS` 后，优先用底部 `LANG` 触摸条切换；也可以点 **language / 语言** 行本身。选择写入 NVS，重启保留。
+
+## ↔️ 横竖版切换
+
+点 `SETTINGS` 后，使用底部 `LAYOUT` 触摸条在 **Landscape / Portrait** 之间切换。切换会立即触发整页重绘，并写入 NVS，所以下次开机仍然保持上次的方向。
 
 ---
 
@@ -161,7 +165,7 @@ src/
     data_paper.h         # TamaState + JSON 协议解析（UTF-8 安全）
     xfer_paper.h         # status 响应、name/owner/unpair 命令
     buddy_frames.h       # ASCII 猫的 6 个状态帧
-data/cjk.ttf             # CJK 字体，通过 uploadfs 刷进 LittleFS
+data/cjk.ttf             # 兼容保留的字体资源；PaperS3 当前优先使用内置 M5GFX CJK 字体
 partitions-m5paper.csv   # 3MB app + 13MB LittleFS 分区表
 platformio.ini
 plugin/                  # Claude Code 插件打包
