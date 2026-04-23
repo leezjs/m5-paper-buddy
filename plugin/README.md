@@ -1,7 +1,7 @@
-# M5 Paper Buddy — Claude Code plugin
+# PaperS3 Buddy — Claude Code plugin
 
-A Claude Code companion running on an M5Paper V1.1 (4.7" e-ink, 540×960,
-GT911 touch, ESP32). The Paper mirrors every Claude Code session on your
+A Claude Code companion running on a PaperS3 (4.7" e-ink, 540×960,
+touch, ESP32-S3). The Paper mirrors every Claude Code session on your
 desk: project/branch, model, token budget, recent activity, Claude's
 latest reply. Permission prompts route to hardware buttons; Claude's
 `AskUserQuestion` lands as four tappable option buttons.
@@ -50,7 +50,7 @@ The install runs `scripts/install.sh`, which:
 3. Patches the PlatformIO `mklittlefs` x86_64 binary on Apple Silicon
    (`brew install mklittlefs` + symlink) — required for `uploadfs`
 4. Merges the hook block into `~/.claude/settings.json` (backs up first)
-5. Offers to flash firmware **and** filesystem (CJK font) if a Paper
+5. Offers to flash firmware **and** filesystem (CJK font) if a PaperS3
    is on USB
 6. Starts the daemon in the background
 
@@ -96,7 +96,7 @@ State directory: `~/.claude-buddy/` (pid file, daemon log).
 
 ## Firmware notes
 
-The M5Paper firmware lives in the parent repo's `src/paper/`. Key parts:
+The PaperS3 firmware lives in the parent repo's `src/paper/`. Key parts:
 
 - `main.cpp` — UI, state machine, touch handling, settings page
 - `data_paper.h` — TamaState + line-buffered JSON parser (UTF-8 safe)
@@ -104,8 +104,8 @@ The M5Paper firmware lives in the parent repo's `src/paper/`. Key parts:
 - `buddy_frames.h` — ASCII cat art (6 states)
 
 Partition table is `partitions-m5paper.csv` — app 3MB + LittleFS 13MB to
-fit the CJK font. The font is `data/cjk.ttf` (GenSenRounded-R.ttf from
-the M5EPD examples) and gets flashed via `pio run -t uploadfs`.
+fit the CJK font. The default PlatformIO env is `papers3`; set
+`BUDDY_PIO_ENV=m5paper` if you need the legacy M5Paper build.
 
 ## Uninstall
 

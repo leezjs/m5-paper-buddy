@@ -2,7 +2,7 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <ArduinoJson.h>
-#include <M5EPD.h>
+#include "paper_compat.h"
 #include "../ble_bridge.h"
 
 // Paper fork of xfer.h. Dropped vs the Stick original:
@@ -56,13 +56,13 @@ inline bool xferCommand(JsonDocument& doc) {
     // M5Paper: battery is read straight off the ADC, no PMIC. 3.2V = empty,
     // 4.35V = full (per the M5EPD examples). No charge current exposed, so
     // we approximate usb/charging from the raw USB-in voltage.
-    uint32_t vBat_mV = M5.getBatteryVoltage();
+    uint32_t vBat_mV = buddyBatteryVoltage();
     int vBat = (int)vBat_mV;
     int pct = ((int)vBat - 3200) * 100 / (4350 - 3200);
     if (pct < 0) pct = 0; if (pct > 100) pct = 100;
     // M5EPD doesn't expose VBUS directly; treat "bat voltage > 4.25V" as
     // a proxy for USB-connected. Good enough for the desktop's battery pill.
-    bool usb = vBat_mV > 4250;
+    bool usb = buddyUsbConnected();
     char b[320];
     int len = snprintf(b, sizeof(b),
       "{\"ack\":\"status\",\"ok\":true,\"n\":0,\"data\":{"

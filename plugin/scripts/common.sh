@@ -11,8 +11,11 @@
 
 set -euo pipefail
 
-PLUGIN_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd )"
-REPO_ROOT="$( cd "$PLUGIN_DIR/.." && pwd )"
+# Resolve through symlinks: when the plugin is installed into
+# ~/.claude/plugins/local-marketplaces/... only `plugin/` is symlinked in,
+# so we must follow the symlink back to the real repo to reach `tools/`.
+PLUGIN_DIR="$( cd -P "$( dirname "${BASH_SOURCE[0]}" )/.." && pwd -P )"
+REPO_ROOT="$( cd -P "$PLUGIN_DIR/.." && pwd -P )"
 STATE_DIR="$HOME/.claude-buddy"
 PID_FILE="$STATE_DIR/daemon.pid"
 LOG_FILE="$STATE_DIR/daemon.log"
@@ -57,7 +60,9 @@ have_pio() { command -v pio >/dev/null 2>&1; }
 
 find_serial() {
   # Echo the first matching USB serial device, or empty if none.
-  ls /dev/cu.usbserial-* /dev/ttyUSB* 2>/dev/null | head -n1 || true
+  # M5Paper presents as CDC (cu.usbmodem*) on macOS; older FTDI/CP210x
+  # boards use cu.usbserial-*. On Linux it's ttyUSB* or ttyACM*.
+  ls /dev/cu.usbmodem* /dev/cu.usbserial-* /dev/ttyACM* /dev/ttyUSB* 2>/dev/null | head -n1 || true
 }
 
 is_running() {

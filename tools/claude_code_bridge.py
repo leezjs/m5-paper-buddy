@@ -8,7 +8,8 @@ Stands in for the Claude Desktop app. Hook flow:
                                      └───── permission ack ──────┘
 
 Two transports:
-  - USB serial: zero-setup, autodetects /dev/cu.usbserial-*.
+  - USB serial: zero-setup, autodetects /dev/cu.usbmodem* (M5Paper CDC)
+    or /dev/cu.usbserial-* (older FTDI/CP210x boards).
   - BLE (Nordic UART Service via bleak): wireless. First connect triggers
     macOS's system pairing dialog — enter the 6-digit passkey shown on
     the Paper. After that, the daemon auto-reconnects whenever both sides
@@ -43,6 +44,7 @@ import time
 from collections import deque
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 
 # Nordic UART Service UUIDs — match the firmware's ble_bridge.cpp.
 NUS_SERVICE_UUID = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
@@ -100,39 +102,161 @@ class Transport:
     def connected(self) -> bool: raise NotImplementedError
 
 
+def list_serial_candidates():
+    """Best-effort USB serial discovery across macOS/Linux.
+
+    Order matters: prefer macOS cu.* devices for active outbound opens, then
+    tty.* aliases, then Linux ACM/USB serial nodes.
+    """
+    seen = set()
+    out = []
+    for pattern in (
+        "/dev/cu.usbmodem*",
+        "/dev/cu.usbserial-*",
+        "/dev/tty.usbmodem*",
+        "/dev/tty.usbserial-*",
+        "/dev/ttyACM*",
+        "/dev/ttyUSB*",
+    ):
+        for path in sorted(glob.glob(pattern)):
+            if path in seen:
+                continue
+            seen.add(path)
+            out.append(path)
+    return out
+
+
 class SerialTransport(Transport):
-    def __init__(self, port):
+    def __init__(self, port=None, allow_scan=True):
         import serial
-        self._port_name = port
-        self.ser = serial.Serial(port, 115200, timeout=0.2)
-        self._write_lock = threading.Lock()
-        time.sleep(0.2)   # let the port settle before talking
-        log(f"[serial] opened {port}")
+        self._serial = serial
+        self._preferred_port = port
+        self._port_name = None
+        self._allow_scan = allow_scan
+        self.ser = None
+        self._io_lock = threading.Lock()
+        self._open_lock = threading.Lock()
+        self._connected_evt = threading.Event()
+        self._on_connect = None
+        self._last_open_error = ""
+        self._last_no_device_log = 0.0
 
     def start(self, on_byte, on_connect=None):
-        if on_connect:
-            on_connect()   # serial is "connected" as soon as the port opens
+        self._on_connect = on_connect
         threading.Thread(target=self._reader, args=(on_byte,), daemon=True).start()
+
+    def _candidate_ports(self):
+        ports = []
+        for path in (self._port_name, self._preferred_port):
+            if path and path not in ports:
+                ports.append(path)
+        if self._allow_scan:
+            for path in list_serial_candidates():
+                if path not in ports:
+                    ports.append(path)
+        return ports
+
+    def _mark_disconnected(self, reason):
+        with self._io_lock:
+            ser = self.ser
+            self.ser = None
+        if ser is not None:
+            try:
+                ser.close()
+            except Exception:
+                pass
+        if self._connected_evt.is_set():
+            port = self._port_name or self._preferred_port or "(unknown)"
+            log(f"[serial] lost {port}: {reason}")
+        self._connected_evt.clear()
+
+    def _ensure_open(self):
+        if self._connected_evt.is_set() and self.ser is not None:
+            return True
+
+        with self._open_lock:
+            if self._connected_evt.is_set() and self.ser is not None:
+                return True
+
+            ports = self._candidate_ports()
+            if not ports:
+                now = time.time()
+                if now - self._last_no_device_log >= 5:
+                    log("[serial] no USB serial device found, retrying...")
+                    self._last_no_device_log = now
+                return False
+
+            last_error = ""
+            for port in ports:
+                try:
+                    # Opening some ESP boards with pyserial's default DTR/RTS
+                    # state can reset the MCU immediately. Configure the line
+                    # state before open so the USB CDC device stays up.
+                    ser = self._serial.Serial(
+                        port=None,
+                        baudrate=115200,
+                        timeout=0.2,
+                        write_timeout=1.0,
+                        rtscts=False,
+                        dsrdtr=False,
+                    )
+                    ser.dtr = False
+                    ser.rts = False
+                    ser.port = port
+                    ser.open()
+                    with self._io_lock:
+                        self.ser = ser
+                    self._port_name = port
+                    self._connected_evt.set()
+                    self._last_open_error = ""
+                    time.sleep(0.2)   # let the port settle before talking
+                    try:
+                        ser.reset_input_buffer()
+                    except Exception:
+                        pass
+                    log(f"[serial] opened {port}")
+                    if self._on_connect:
+                        self._on_connect()
+                    return True
+                except Exception as e:
+                    last_error = f"{port}: {e}"
+
+            if last_error and last_error != self._last_open_error:
+                log(f"[serial] open fail: {last_error}")
+                self._last_open_error = last_error
+            return False
 
     def _reader(self, on_byte):
         while True:
+            if not self._ensure_open():
+                time.sleep(1)
+                continue
+            with self._io_lock:
+                ser = self.ser
             try:
-                chunk = self.ser.read(256)
+                chunk = ser.read(256)
             except Exception as e:
-                log(f"[serial] read fail: {e}")
+                self._mark_disconnected(f"read failed: {e}")
                 time.sleep(1)
                 continue
             for b in chunk:
                 on_byte(b)
 
     def write(self, data: bytes):
-        with self._write_lock:
-            try:
-                self.ser.write(data)
-            except Exception as e:
-                log(f"[serial] write fail: {e}")
+        if not self._ensure_open():
+            return
+        with self._io_lock:
+            ser = self.ser
+        try:
+            for off in range(0, len(data), 64):
+                ser.write(data[off:off + 64])
+                ser.flush()
+                if off + 64 < len(data):
+                    time.sleep(0.003)
+        except Exception as e:
+            self._mark_disconnected(f"write failed: {e}")
 
-    def connected(self): return True
+    def connected(self): return self._connected_evt.is_set()
 
 
 class BLETransport(Transport):
@@ -289,11 +413,37 @@ def on_rx_byte(b: int):
 def send_line(obj: dict):
     if TRANSPORT is None:
         return
-    # UTF-8 goes through as-is now that the firmware loads a CJK TTF
-    # and uses UTF-8-aware wrapping. (Prior revision stripped non-ASCII
-    # here to work around the default font crashing on multi-byte codes.)
+
+    def _sanitize_device_value(v):
+        if isinstance(v, str):
+            # PaperS3's current built-in font path handles ASCII + common BMP
+            # CJK well, but some emoji / non-BMP symbols can wedge rendering.
+            # Strip those for device display only.
+            return "".join(ch for ch in v if ord(ch) <= 0xFFFF and (ord(ch) >= 0x20 or ch in "\n\r\t"))
+        if isinstance(v, list):
+            return [_sanitize_device_value(x) for x in v]
+        if isinstance(v, dict):
+            return {k: _sanitize_device_value(val) for k, val in v.items()}
+        return v
+
+    obj = _sanitize_device_value(obj)
     data = (json.dumps(obj, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
     TRANSPORT.write(data)
+
+
+def push_heartbeat(reason: str):
+    hb = build_heartbeat()
+    encoded = json.dumps(hb, separators=(",", ":"), ensure_ascii=False).encode()
+    log("[hb] %s total=%u running=%u waiting=%u msg=%r asst=%u" % (
+        reason,
+        hb.get("total", 0),
+        hb.get("running", 0),
+        hb.get("waiting", 0),
+        hb.get("msg", ""),
+        len(hb.get("assistant_msg", "")),
+    ))
+    log("[hb] bytes=%u" % len(encoded))
+    TRANSPORT.write(encoded + b"\n")
 
 
 # -----------------------------------------------------------------------------
@@ -481,6 +631,14 @@ def build_heartbeat() -> dict:
             sid = next(iter(SESSIONS_RUNNING))
         elif SESSION_META:
             sid = max(SESSION_META, key=lambda s: SESSION_META[s].get("checked_at", 0))
+        elif SESSIONS_TOTAL:
+            sid = next(iter(SESSIONS_TOTAL))
+        elif SESSION_ASSISTANT:
+            sid = next(iter(SESSION_ASSISTANT))
+        elif SESSION_CONTEXT:
+            sid = next(iter(SESSION_CONTEXT))
+        elif SESSION_MODEL:
+            sid = next(iter(SESSION_MODEL))
 
         if sid and sid in SESSION_META:
             m = SESSION_META[sid]
@@ -518,15 +676,22 @@ def heartbeat_loop():
     the next send (the clear-then-wait pattern picks up any new set).
     """
     MIN_INTERVAL = 1.0
+    IDLE_INTERVAL = 2.0
     last_sent = 0.0
     while True:
-        BUMP_EVENT.wait(timeout=10)
+        BUMP_EVENT.wait(timeout=IDLE_INTERVAL)
         BUMP_EVENT.clear()
+        # Transcript writes can land slightly after the corresponding hook.
+        # Refresh cached per-session transcript-derived fields on each loop
+        # so latest reply/model/context eventually converge even when the
+        # hook raced ahead of the JSONL append.
+        for sid, tp in list(SESSION_TRANSCRIPT_PATH.items()):
+            refresh_transcript_state(sid, tp)
         now = time.time()
         since = now - last_sent
         if since < MIN_INTERVAL:
             time.sleep(MIN_INTERVAL - since)
-        send_line(build_heartbeat())
+        push_heartbeat("tick")
         last_sent = time.time()
 
 
@@ -615,6 +780,66 @@ def extract_session_model(path: str) -> str:
 
 
 SESSION_MODEL: dict = {}
+SESSION_TRANSCRIPT_PATH: dict = {}
+
+
+def resolve_transcript_path(sid: str, cwd: str = "") -> str:
+    if not sid:
+        return ""
+    cached = SESSION_TRANSCRIPT_PATH.get(sid)
+    if cached and os.path.exists(cached):
+        return cached
+
+    roots = []
+    projects_root = Path.home() / ".claude" / "projects"
+    if cwd:
+        slug = cwd.replace(os.sep, "-")
+        if not slug.startswith("-"):
+            slug = "-" + slug
+        roots.append(projects_root / slug)
+    roots.append(projects_root)
+
+    seen = set()
+    for root in roots:
+        root = Path(root)
+        if root in seen or not root.exists():
+            continue
+        seen.add(root)
+        direct = root / f"{sid}.jsonl"
+        if direct.exists():
+            SESSION_TRANSCRIPT_PATH[sid] = str(direct)
+            return str(direct)
+        for path in root.rglob(f"{sid}.jsonl"):
+            SESSION_TRANSCRIPT_PATH[sid] = str(path)
+            return str(path)
+    return ""
+
+
+def refresh_transcript_state(sid: str, tp: str) -> None:
+    global ASSISTANT_MSG
+    if not sid or not tp or not os.path.exists(tp):
+        return
+
+    m = extract_session_model(tp)
+    if m:
+        sm = short_model(m)
+        if SESSION_MODEL.get(sid) != sm:
+            SESSION_MODEL[sid] = sm
+            BUMP_EVENT.set()
+
+    latest = extract_last_assistant(tp)
+    if latest:
+        if SESSION_ASSISTANT.get(sid) != latest:
+            SESSION_ASSISTANT[sid] = latest
+            BUMP_EVENT.set()
+        if latest != ASSISTANT_MSG:
+            ASSISTANT_MSG = latest
+            BUMP_EVENT.set()
+
+    ctx = extract_session_context(tp)
+    if SESSION_CONTEXT.get(sid) != ctx:
+        SESSION_CONTEXT[sid] = ctx
+        BUMP_EVENT.set()
 
 
 def extract_last_assistant(path: str) -> str:
@@ -672,6 +897,13 @@ class HookHandler(BaseHTTPRequestHandler):
 
         sid = payload.get("session_id", "")
         cwd = payload.get("cwd", "")
+        if sid:
+            with STATE_LOCK:
+                SESSIONS_TOTAL.add(sid)
+                if event == "Stop":
+                    SESSIONS_RUNNING.discard(sid)
+                else:
+                    SESSIONS_RUNNING.add(sid)
         if sid and cwd:
             refresh_git(sid, cwd)
 
@@ -682,31 +914,13 @@ class HookHandler(BaseHTTPRequestHandler):
                 MODEL_NAME = short_model(v); break
 
         tp = payload.get("transcript_path")
-        if isinstance(tp, str) and tp:
-            # Model comes from the transcript's assistant messages, not
-            # from the hook payload itself.
-            if sid:
-                m = extract_session_model(tp)
-                if m:
-                    SESSION_MODEL[sid] = short_model(m)
-            latest = extract_last_assistant(tp)
-            if latest:
-                # Per-session cache so the focused session's reply is what
-                # gets displayed. Also refresh the global fallback.
-                if sid and SESSION_ASSISTANT.get(sid) != latest:
-                    SESSION_ASSISTANT[sid] = latest
-                    BUMP_EVENT.set()
-                if latest != ASSISTANT_MSG:
-                    ASSISTANT_MSG = latest
-                    BUMP_EVENT.set()
-            # Current-turn context usage for this session. Heartbeat uses
-            # the FOCUSED session's value so the user sees how full that
-            # window is, not an unrelated cross-session sum.
-            if sid:
-                ctx = extract_session_context(tp)
-                if SESSION_CONTEXT.get(sid) != ctx:
-                    SESSION_CONTEXT[sid] = ctx
-                    BUMP_EVENT.set()
+        if (not isinstance(tp, str) or not tp) and sid:
+            tp = resolve_transcript_path(sid, cwd)
+        if isinstance(tp, str) and tp and sid:
+            if SESSION_TRANSCRIPT_PATH.get(sid) != tp:
+                SESSION_TRANSCRIPT_PATH[sid] = tp
+                log(f"[transcript] sid={sid[:8]} path={tp}")
+            refresh_transcript_state(sid, tp)
 
         try:
             if   event == "SessionStart":      resp = self._session_start(payload)
@@ -879,12 +1093,14 @@ def pick_transport(kind: str) -> Transport:
     """Resolve --transport flag to a concrete Transport. 'auto' tries
     serial first (zero-setup, no BLE permission dance) and falls back
     to BLE if no USB device is found."""
-    candidates = sorted(glob.glob("/dev/cu.usbserial-*") + glob.glob("/dev/ttyUSB*"))
+    candidates = list_serial_candidates()
 
     if kind == "serial":
         if not candidates:
-            sys.exit("--transport serial requested but no /dev/cu.usbserial-* found")
-        return SerialTransport(candidates[0])
+            sys.exit("--transport serial requested but no USB serial device found "
+                     "(looked for cu.usbmodem*, cu.usbserial-*, tty.usbmodem*, "
+                     "tty.usbserial-*, ttyACM*, ttyUSB*)")
+        return SerialTransport(candidates[0], allow_scan=True)
 
     if kind == "ble":
         return BLETransport()
@@ -892,7 +1108,7 @@ def pick_transport(kind: str) -> Transport:
     # auto
     if candidates:
         log("[transport] serial device found, using USB")
-        return SerialTransport(candidates[0])
+        return SerialTransport(candidates[0], allow_scan=True)
     log("[transport] no serial device, falling back to BLE")
     return BLETransport()
 
@@ -914,7 +1130,7 @@ def main():
     BUDGET_LIMIT = max(0, args.budget)
 
     if args.port:
-        TRANSPORT = SerialTransport(args.port)
+        TRANSPORT = SerialTransport(args.port, allow_scan=False)
     else:
         TRANSPORT = pick_transport(args.transport)
 
@@ -925,7 +1141,7 @@ def main():
         if args.owner:
             send_line({"cmd": "owner", "name": args.owner})
         send_line({"time": [int(time.time()), tz_offset_seconds()]})
-        send_line(build_heartbeat())
+        push_heartbeat("handshake")
 
     TRANSPORT.start(on_rx_byte, on_connect=_handshake)
     threading.Thread(target=heartbeat_loop, daemon=True).start()

@@ -10,21 +10,21 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="GPL-3.0"></a>
-  <img src="https://img.shields.io/badge/hardware-M5Paper%20V1.1-orange" alt="M5Paper">
+  <img src="https://img.shields.io/badge/hardware-PaperS3-orange" alt="PaperS3">
   <img src="https://img.shields.io/badge/firmware-ESP32%20%2B%20PlatformIO-brightgreen" alt="ESP32">
   <img src="https://img.shields.io/badge/daemon-Python%203-yellow" alt="Python">
   <img src="https://img.shields.io/badge/integration-Claude%20Code%20Plugin-7F52FF" alt="Claude Code">
   <img src="https://img.shields.io/badge/i18n-EN%20%2F%20中文-lightgrey" alt="i18n">
 </p>
 
-<p align="center"><b>A physical Claude Code companion running on M5Paper V1.1</b></p>
+<p align="center"><b>A physical Claude Code companion running on PaperS3</b></p>
 
 ---
 
 ## ✨ Intro
 
-A Claude Code sidekick running on an **M5Paper V1.1** (4.7" e-ink,
-540×960, GT911 touch, ESP32). Sits on your desk and mirrors every
+A Claude Code sidekick running on a **PaperS3** (4.7" e-ink,
+540×960, touch, ESP32-S3). Sits on your desk and mirrors every
 Claude Code session you have open: project, branch, model, context
 usage, recent activity, Claude's latest reply. When Claude wants to
 run a tool, the full content shows up as a full-screen approval card
@@ -50,7 +50,7 @@ with hardware buttons and touch options.
 
 ## 🛠️ Hardware
 
-- **M5Paper V1.1** (4.7" e-ink, 540×960, GT911 capacitive touch, ESP32, 16MB flash)
+- **PaperS3** (4.7" e-ink, 540×960, touch, ESP32-S3, 16MB flash)
 - USB-C cable (required for initial flash; BLE works afterwards)
 
 ---
@@ -58,7 +58,7 @@ with hardware buttons and touch options.
 ## 🚀 Quick start
 
 **Prereqs**: [PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/),
-Homebrew (Apple Silicon only, for native `mklittlefs`), and an M5Paper V1.1.
+Homebrew (Apple Silicon only, for native `mklittlefs`), and a PaperS3.
 
 ```bash
 # Clone
@@ -83,13 +83,16 @@ cd m5-paper-buddy
 **Manual install (no plugin)**:
 
 ```bash
-pio run -e m5paper -t uploadfs          # flash the font to LittleFS (~90s)
-pio run -e m5paper -t upload            # flash firmware (~30s)
+pio run -e papers3 -t uploadfs          # flash the font to LittleFS (~90s)
+pio run -e papers3 -t upload            # flash firmware (~30s)
 python3 tools/claude_code_bridge.py --budget 200000
 
 # Then manually copy plugin/settings/hooks.json's hooks block into
 # ~/.claude/settings.json
 ```
+
+The default flashing target is now `papers3`. If you still need the legacy
+M5Paper build, use `-e m5paper` or set `BUDDY_PIO_ENV=m5paper`.
 
 ---
 
@@ -201,9 +204,9 @@ tools/claude_code_bridge.py   # daemon: HTTP → serial/BLE bridge
 Firmware iteration:
 
 ```bash
-pio run -e m5paper              # build only
-pio run -e m5paper -t upload    # flash firmware
-pio run -e m5paper -t uploadfs  # refresh LittleFS (only when font changes)
+pio run -e papers3              # build only
+pio run -e papers3 -t upload    # flash firmware
+pio run -e papers3 -t uploadfs  # refresh LittleFS (only when font changes)
 ```
 
 Daemon iteration:

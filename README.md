@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0-blue.svg" alt="GPL-3.0"></a>
-  <img src="https://img.shields.io/badge/hardware-M5Paper%20V1.1-orange" alt="M5Paper">
+  <img src="https://img.shields.io/badge/hardware-PaperS3-orange" alt="PaperS3">
   <img src="https://img.shields.io/badge/firmware-ESP32%20%2B%20PlatformIO-brightgreen" alt="ESP32">
   <img src="https://img.shields.io/badge/daemon-Python%203-yellow" alt="Python">
   <img src="https://img.shields.io/badge/integration-Claude%20Code%20Plugin-7F52FF" alt="Claude Code">
@@ -23,7 +23,7 @@
 
 ## ✨ 简介
 
-用一块 **M5Paper V1.1**（4.7" 电子墨水屏 / 540×960 / GT911 触摸 / ESP32）做你的 Claude Code 伴侣屏。开着多个 Claude Code 窗口的时候，这块墨水屏会**实时镜像**每个 session 的项目、分支、上下文占用、最新回复和活动日志。Claude 要调用工具时，完整的命令 / diff / 内容会**全屏弹出**等你在**硬件按键**或**触屏**上确认。
+用一块 **PaperS3**（4.7" 电子墨水屏 / 540×960 / 触摸 / ESP32-S3）做你的 Claude Code 伴侣屏。开着多个 Claude Code 窗口的时候，这块墨水屏会**实时镜像**每个 session 的项目、分支、上下文占用、最新回复和活动日志。Claude 要调用工具时，完整的命令 / diff / 内容会**全屏弹出**等你在**硬件按键**或**触屏**上确认。
 
 ---
 
@@ -45,14 +45,14 @@
 
 ## 🛠️ 硬件
 
-- **M5Paper V1.1**（4.7" 电子墨水屏、540×960、GT911 电容触摸、ESP32、16MB Flash）
+- **PaperS3**（4.7" 电子墨水屏、540×960、触摸、ESP32-S3、16MB Flash）
 - 一条 USB-C 线（初次烧录必须，之后可以换 BLE）
 
 ---
 
 ## 🚀 快速开始
 
-**前置**：[PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/)、Homebrew（Apple Silicon 下装 `mklittlefs` 用）、一台 M5Paper V1.1。
+**前置**：[PlatformIO Core](https://docs.platformio.org/en/latest/core/installation/)、Homebrew（Apple Silicon 下装 `mklittlefs` 用）、一台 PaperS3。
 
 ```bash
 # 克隆
@@ -76,13 +76,15 @@ cd m5-paper-buddy
 **手工模式（不走插件）**：
 
 ```bash
-pio run -e m5paper -t uploadfs          # 刷字体进 LittleFS（~90s）
-pio run -e m5paper -t upload            # 刷固件（~30s）
+pio run -e papers3 -t uploadfs          # 刷字体进 LittleFS（~90s）
+pio run -e papers3 -t upload            # 刷固件（~30s）
 python3 tools/claude_code_bridge.py --budget 200000
 
 # 然后把 plugin/settings/hooks.json 的 hooks 块手动合并到
 # ~/.claude/settings.json
 ```
+
+默认刷机环境现在是 `papers3`。如果你要继续刷旧的 M5Paper 固件，可手动改用 `-e m5paper` 或设置 `BUDDY_PIO_ENV=m5paper`。
 
 ---
 
@@ -185,9 +187,9 @@ tools/claude_code_bridge.py   # daemon: HTTP → serial/BLE 桥接
 固件改完后：
 
 ```bash
-pio run -e m5paper              # 只 build
-pio run -e m5paper -t upload    # 烧固件
-pio run -e m5paper -t uploadfs  # 更新 LittleFS（字体变了才需要）
+pio run -e papers3              # 只 build
+pio run -e papers3 -t upload    # 烧固件
+pio run -e papers3 -t uploadfs  # 更新 LittleFS（字体变了才需要）
 ```
 
 daemon 改完直接重启：

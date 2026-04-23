@@ -6,3 +6,4 @@
 # tracked and only ignore scratch subfolders.
 data/characters/
 data/.tmp/
+**/__pycache__/

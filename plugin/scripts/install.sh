@@ -59,7 +59,7 @@ if [ -n "$DEV" ]; then
   fi
 else
   echo ""
-  echo "==> No M5Paper detected over USB."
+  echo "==> No PaperS3 detected over USB."
   echo "    Plug it in and run: ${SELF_DIR}/flash.sh"
 fi
 

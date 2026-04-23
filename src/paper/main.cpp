@@ -1,4 +1,4 @@
-// M5Paper V1.1 buddy firmware.
+// Paper buddy firmware.
 //
 // 4.7" 540x960 e-ink portrait. Always-on dashboard for Claude Code:
 //   - top band: project/sessions (L) + model/budget (R)
@@ -8,24 +8,45 @@
 // Full-screen approval card takes over when a permission decision is needed.
 //
 // Controls (side buttons, top→bottom in portrait):
-//   UP (top)       short: force GC16 full refresh (clears ghosting)
-//                  long (1.5s): toggle DND mode (auto-approve)
-//   PUSH (middle)  approve when prompt is up, otherwise nudge a redraw
-//   DOWN (bottom)  deny when prompt is up, otherwise toggle demo mode
+//   BTN_UP        short: force a full refresh / redraw
+//                 long (1.5s): toggle DND mode (auto-approve)
+//   BTN_APPROVE   approve when prompt is up, otherwise nudge a redraw
+//   BTN_DENY      deny when prompt is up, otherwise toggle demo mode
 
-#include <M5EPD.h>
-#include <LittleFS.h>
 #include <stdarg.h>
 #include <rom/rtc.h>
+#include "paper_compat.h"
 #include "../ble_bridge.h"
 #include "data_paper.h"
 #include "buddy_frames.h"
 
+#ifndef BUDDY_DEVICE_LABEL
+#define BUDDY_DEVICE_LABEL "M5Paper V1.1"
+#endif
+
+#ifndef BUDDY_PIO_ENV
+#define BUDDY_PIO_ENV "unknown"
+#endif
+
+#ifndef BUDDY_TARGET_PAPERS3
 M5EPD_Canvas canvas(&M5.EPD);
+#endif
 
-static const int W = 540;
-static const int H = 960;
+static inline int screenW() { return canvas.width(); }
+static inline int screenH() { return canvas.height(); }
+#define W (screenW())
+#define H (screenH())
 
+#ifdef BUDDY_TARGET_PAPERS3
+// PaperS3 currently uses M5GFX's built-in CJK font set, where setTextSize()
+// is a scale factor, not a pixel height.
+static const int TS_SM   = 1;
+static const int TS_MD   = 2;
+static const int TS_LG   = 2;
+static const int TS_XL   = 3;
+static const int TS_XXL  = 4;
+static const int TS_HUGE = 5;
+#else
 // Text sizes — pixel heights (TTF rendering uses setTextSize as pixels,
 // not a multiplier like the built-in font does). Each gets a
 // createRender() in setup() so the glyph cache is warm for CJK.
@@ -35,10 +56,57 @@ static const int TS_LG   = 34;   // emphasis
 static const int TS_XL   = 44;   // tool name, option labels
 static const int TS_XXL  = 56;   // big headline
 static const int TS_HUGE = 72;   // passkey digits / splash
+#endif
 
+#ifdef BUDDY_TARGET_PAPERS3
+static const uint16_t INK      = TFT_BLACK;
+static const uint16_t INK_DIM  = TFT_BLACK;
+static const uint16_t PAPER    = TFT_WHITE;
+#else
 static const uint16_t INK      = 15;
 static const uint16_t INK_DIM  = 13;
 static const uint16_t PAPER    = 0;
+#endif
+
+#ifdef BUDDY_TARGET_PAPERS3
+static const int HEADER_RULE_Y = 86;
+static const int TOP_BAND_Y = 102;
+static const int TOP_BAND_H = 170;
+static const int TOP_BAND_RULE_Y = 286;
+static const int STATS_Y = 300;
+static const int STATS_RULE_Y = 360;
+static const int REPLY_Y = 378;
+static const int REPLY_RULE_Y = 592;
+static const int ACTIVITY_Y = 610;
+static const int FOOTER_TOP = 790;
+#else
+static const int HEADER_RULE_Y = 94;
+static const int TOP_BAND_Y = 100;
+static const int TOP_BAND_H = 160;
+static const int TOP_BAND_RULE_Y = 264;
+static const int STATS_Y = 280;
+static const int STATS_RULE_Y = 326;
+static const int REPLY_Y = 338;
+static const int REPLY_RULE_Y = 510;
+static const int ACTIVITY_Y = 522;
+static const int FOOTER_TOP = H - 170;
+#endif
+
+static const int LS_HEADER_RULE_Y = 64;
+static const int LS_LEFT_X = 20;
+static const int LS_LEFT_W = 550;
+static const int LS_RIGHT_X = 590;
+static const int LS_RIGHT_W = 350;
+static const int LS_REPLY_Y = 86;
+static const int LS_REPLY_H = 180;
+static const int LS_ACTIVITY_Y = 286;
+static const int LS_ACTIVITY_H = 164;
+static const int LS_SUMMARY_Y = 86;
+static const int LS_SUMMARY_H = 190;
+static const int LS_STATS_Y = 296;
+static const int LS_STATS_H = 64;
+static const int LS_FOOTER_Y = 380;
+static const int LS_FOOTER_H = 140;
 
 // Section rules — use full INK + 2px thick so they're clearly visible
 // under both GC16 (where grayscales differ) and DU (where everything
@@ -50,6 +118,31 @@ static void drawRule(int y) {
 static void drawRuleInset(int y, int inset) {
   canvas.drawFastHLine(inset, y,     W - 2*inset, INK);
   canvas.drawFastHLine(inset, y + 1, W - 2*inset, INK);
+}
+
+static void drawPanel(int x, int y, int w, int h) {
+  for (int d = 0; d < 2; d++) {
+    canvas.drawRect(x + d, y + d, w - 2*d, h - 2*d, INK);
+  }
+}
+
+static void drawActionBar(int x, int y, int w, int h,
+                          const char* a, const char* b, const char* c) {
+  int gap = 10;
+  int cellW = (w - gap * 2) / 3;
+  canvas.fillRect(x, y, cellW, h, PAPER);
+  canvas.fillRect(x + cellW + gap, y, cellW, h, PAPER);
+  canvas.fillRect(x + (cellW + gap) * 2, y, cellW, h, PAPER);
+  drawPanel(x, y, cellW, h);
+  drawPanel(x + cellW + gap, y, cellW, h);
+  drawPanel(x + (cellW + gap) * 2, y, cellW, h);
+  canvas.setTextDatum(MC_DATUM);
+  canvas.setTextSize(TS_SM);
+  canvas.setTextColor(INK);
+  canvas.drawString(a, x + cellW / 2, y + h / 2);
+  canvas.drawString(b, x + cellW + gap + cellW / 2, y + h / 2);
+  canvas.drawString(c, x + (cellW + gap) * 2 + cellW / 2, y + h / 2);
+  canvas.setTextDatum(TL_DATUM);
 }
 
 static char btName[16] = "Claude";
@@ -73,6 +166,7 @@ static uint32_t lastFullRefreshMs = 0;
 static uint32_t lastPartialRefreshMs = 0;
 static bool     redrawPending = true;
 static bool     lastMode = false;
+static bool     forceFullRefresh = false;
 
 static bool     dndMode = false;
 static const uint32_t DND_AUTO_DELAY_MS = 600;
@@ -81,6 +175,7 @@ static bool     dndAutoSent = false;
 // UI language. 0 = English, 1 = 中文. Persisted in NVS via Preferences.
 // Usage: canvas.drawString(LX("PROJECT", "项目"), x, y);
 static uint8_t  uiLang = 0;
+static bool     uiLandscape = BUDDY_DEFAULT_LANDSCAPE;
 #define LX(en, zh) (uiLang == 1 ? (zh) : (en))
 
 // Short-lived "celebrate" flash after any approve/deny so the buddy face
@@ -106,6 +201,11 @@ static void fmtTokens(char* out, size_t n, uint32_t v) {
 // size: ASCII ~0.55*size, anything multi-byte ~size (square glyph).
 static int estWidth(const char* s, int textSize) {
   int w = 0;
+#ifdef BUDDY_TARGET_PAPERS3
+  int approxPx = textSize * 16;
+#else
+  int approxPx = textSize;
+#endif
   const unsigned char* p = (const unsigned char*)s;
   while (*p) {
     int cpLen = 1;
@@ -113,7 +213,7 @@ static int estWidth(const char* s, int textSize) {
     else if ((*p & 0xE0) == 0xC0)  cpLen = 2;
     else if ((*p & 0xF0) == 0xE0)  cpLen = 3;
     else if ((*p & 0xF8) == 0xF0)  cpLen = 4;
-    w += (cpLen == 1) ? (textSize * 55 / 100) : textSize;
+    w += (cpLen == 1) ? (approxPx * 55 / 100) : approxPx;
     p += cpLen;
   }
   return w;
@@ -279,9 +379,13 @@ static uint8_t optionRectCount = 0;
 static int8_t  selectedOption  = -1;
 
 static bool   settingsOpen = false;
-static HitRect settingsTrigger  = {W - 140, 0, 140, 100};
+static HitRect settingsTrigger  = {0, 0, 0, 0};
 static HitRect settingsCloseHit = {0, 0, 0, 0};
 static HitRect settingsLangHit  = {0, 0, 0, 0};
+static HitRect settingsLayoutHit = {0, 0, 0, 0};
+static HitRect settingsActionLangHit = {0, 0, 0, 0};
+static HitRect settingsActionLayoutHit = {0, 0, 0, 0};
+static HitRect settingsActionCloseHit = {0, 0, 0, 0};
 
 // Legacy tab hit rects (approval tabs were dropped; kept for future use).
 static HitRect tabRects[4] = {};
@@ -293,26 +397,50 @@ static HitRect sessionRects[5] = {};
 static uint8_t sessionRectCount = 0;
 
 static void drawHeader() {
-  canvas.setTextDatum(TL_DATUM);          // defensive reset every frame
-  canvas.setTextSize(TS_MD);
-  canvas.setTextColor(INK);
-  canvas.drawString(LX("Paper Buddy", "Paper Buddy"), 24, 22);
-
-  canvas.setTextSize(TS_SM);
-  canvas.setTextColor(INK_DIM);
   char who[64];
   if (ownerName()[0]) snprintf(who, sizeof(who), "%s's %s", ownerName(), petName());
   else                snprintf(who, sizeof(who), "%s", petName());
+
+  char bat[16];
+  snprintf(bat, sizeof(bat), "%d%%", buddyBatteryPercent());
+
+  canvas.setTextDatum(TL_DATUM);
+  canvas.setTextColor(INK);
+
+  if (uiLandscape) {
+    canvas.setTextSize(TS_LG);
+    canvas.drawString(LX("Paper Buddy", "Paper Buddy"), 24, 18);
+    canvas.setTextSize(TS_SM);
+    canvas.drawString(who, 24, 48);
+
+    canvas.setTextDatum(TR_DATUM);
+    canvas.drawString(bat, W - 24, 20);
+    canvas.drawString(LX("SETTINGS", "设置"), W - 24, 48);
+    settingsTrigger = { W - 190, 12, 170, 44 };
+
+    if (dndMode) {
+      int dndW = 72, dndH = 26;
+      int dx = W - 24 - 170 - 12 - dndW;
+      int dy = 30;
+      canvas.fillRect(dx, dy, dndW, dndH, INK);
+      canvas.setTextColor(PAPER, INK);
+      canvas.setTextDatum(MC_DATUM);
+      canvas.drawString("DND", dx + dndW / 2, dy + dndH / 2);
+      canvas.setTextColor(INK);
+      canvas.setTextDatum(TR_DATUM);
+    }
+
+    canvas.setTextDatum(TL_DATUM);
+    drawRule(LS_HEADER_RULE_Y);
+    return;
+  }
+
+  canvas.setTextSize(TS_MD);
+  canvas.drawString(LX("Paper Buddy", "Paper Buddy"), 24, 22);
+  canvas.setTextSize(TS_SM);
+  canvas.setTextColor(INK_DIM);
   canvas.drawString(who, 24, 56);
 
-  // Battery on line 1 (top-right, aligned with "Paper Buddy"), SETTINGS
-  // as plain text on line 2 (aligned with owner). No chip, no box.
-  uint32_t vBat = M5.getBatteryVoltage();
-  int pct = ((int)vBat - 3200) * 100 / (4350 - 3200);
-  if (pct < 0) pct = 0; if (pct > 100) pct = 100;
-  char bat[16]; snprintf(bat, sizeof(bat), "%d%%", pct);
-
-  canvas.setTextSize(TS_SM);
   canvas.setTextColor(INK_DIM);
   canvas.setTextDatum(TR_DATUM);
   canvas.drawString(bat, W - 24, 26);
@@ -320,14 +448,9 @@ static void drawHeader() {
   canvas.setTextSize(TS_SM);
   canvas.setTextColor(INK);
   canvas.drawString(LX("SETTINGS", "设置"), W - 24, 60);
-
-  // Tappable region covers both the "SETTINGS" label and some padding
-  // around it so the user has a generous hit area.
   settingsTrigger = { W - 160, 52, 150, 40 };
 
-  // DND badge sits to the left of SETTINGS on the same line.
   if (dndMode) {
-    canvas.setTextSize(TS_SM);
     int dndW = 60, dndH = 30;
     int dx = W - 160 - 10 - dndW, dy = 50;
     canvas.fillRect(dx, dy, dndW, dndH, INK);
@@ -336,22 +459,99 @@ static void drawHeader() {
     canvas.drawString("DND", dx + dndW/2, dy + dndH/2);
   }
 
+  canvas.setTextColor(INK);
   canvas.setTextDatum(TL_DATUM);
-  drawRule(94);
+  drawRule(HEADER_RULE_Y);
 }
 
 static void drawTopBand() {
+  if (uiLandscape) {
+    drawPanel(LS_RIGHT_X, LS_SUMMARY_Y, LS_RIGHT_W, LS_SUMMARY_H);
+    sessionRectCount = 0;
+
+    int x = LS_RIGHT_X + 18;
+    int y = LS_SUMMARY_Y + 16;
+
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(TS_SM);
+    canvas.setTextColor(INK);
+    canvas.drawString(LX("PROJECT", "项目"), x, y);
+    canvas.drawString(LX("MODEL", "模型"), x + 176, y);
+    y += 26;
+
+    canvas.setTextSize(TS_LG);
+    drawTrunc(tama.project[0] ? tama.project : "-", x, y, 16);
+    drawTrunc(tama.modelName[0] ? tama.modelName : "-", x + 176, y, 14);
+    y += 36;
+
+    canvas.setTextSize(TS_SM);
+    if (tama.branch[0]) {
+      canvas.drawString(tama.branch, x, y);
+    }
+    y += 30;
+
+    canvas.drawString(LX("CONTEXT", "上下文"), x, y);
+    y += 22;
+    char tok[16]; fmtTokens(tok, sizeof(tok), tama.tokensToday);
+    if (tama.budgetLimit > 0) {
+      char lim[16]; fmtTokens(lim, sizeof(lim), tama.budgetLimit);
+      char line[48]; snprintf(line, sizeof(line), "%s / %s", tok, lim);
+      canvas.drawString(line, x, y);
+      y += 22;
+      int bw = LS_RIGHT_W - 36, bh = 10;
+      canvas.drawRect(x, y, bw, bh, INK);
+      int pct = (int)((uint64_t)tama.tokensToday * 100 / tama.budgetLimit);
+      if (pct > 100) pct = 100;
+      int fill = (int)((uint64_t)bw * pct / 100);
+      if (fill > 2) canvas.fillRect(x + 1, y + 1, fill - 2, bh - 2, INK);
+      y += 24;
+    } else {
+      canvas.drawString(tok, x, y);
+      y += 26;
+    }
+
+    canvas.drawString(LX("SESSIONS", "会话"), x, y);
+    y += 22;
+    if (tama.sessionCount > 1) {
+      for (uint8_t i = 0; i < tama.sessionCount && i < 4; i++) {
+        const auto& s = tama.sessions[i];
+        int rowY = y - 3;
+        int rowH = 24;
+        int rowW = LS_RIGHT_W - 36;
+        if (s.focused) {
+          canvas.fillRect(x - 6, rowY, rowW, rowH, INK);
+          canvas.setTextColor(PAPER, INK);
+        } else {
+          canvas.setTextColor(INK);
+        }
+        char row[40];
+        snprintf(row, sizeof(row), "%s %.16s", s.waiting ? "!" : (s.running ? "*" : "."), s.project[0] ? s.project : "-");
+        canvas.drawString(row, x, y);
+        sessionRects[sessionRectCount++] = { x - 6, rowY, rowW, rowH };
+        y += 26;
+      }
+    } else {
+      char line[32];
+      snprintf(line, sizeof(line), LX("%u run  %u wait", "运行 %u  等待 %u"),
+               tama.sessionsRunning, tama.sessionsWaiting);
+      canvas.setTextColor(INK);
+      canvas.drawString(line, x, y);
+    }
+    canvas.setTextDatum(TL_DATUM);
+    return;
+  }
+
   canvas.setTextDatum(TL_DATUM);
   // Column rule — 2px for visual parity with horizontal rules.
-  canvas.drawFastVLine(W/2,     100, 160, INK);
-  canvas.drawFastVLine(W/2 + 1, 100, 160, INK);
+  canvas.drawFastVLine(W/2,     TOP_BAND_Y, TOP_BAND_H, INK);
+  canvas.drawFastVLine(W/2 + 1, TOP_BAND_Y, TOP_BAND_H, INK);
 
   // --- LEFT: session list (2+) OR classic single-project view ---------
-  int lx = 16, ly = 108;
+  int lx = 16, ly = TOP_BAND_Y + 10;
   canvas.setTextSize(TS_SM);
   canvas.setTextColor(INK_DIM);
   canvas.drawString(tama.sessionCount > 1 ? LX("SESSIONS", "会话") : LX("PROJECT", "项目"), lx, ly);
-  ly += 22;
+  ly += 26;
 
   if (tama.sessionCount > 1) {
     // Multi-session: row per session. Tap a row to focus the dashboard
@@ -360,8 +560,8 @@ static void drawTopBand() {
     // "." = idle. Project name on left, branch info on right.
     sessionRectCount = 0;
     canvas.setTextSize(TS_SM);
-    int rowH = 26;
-    for (uint8_t i = 0; i < tama.sessionCount && ly < 254; i++) {
+    int rowH = 28;
+    for (uint8_t i = 0; i < tama.sessionCount && ly < (TOP_BAND_Y + TOP_BAND_H - 16); i++) {
       const auto& s = tama.sessions[i];
       int rowX = 4, rowY = ly - 4, rowW = (W/2) - 8;
       if (s.focused) {
@@ -402,7 +602,7 @@ static void drawTopBand() {
       else                 snprintf(bra, sizeof(bra), "%s", tama.branch);
       drawTrunc(bra, lx, ly, 20);
     }
-    ly = 200;
+    ly = TOP_BAND_Y + 96;
     canvas.setTextSize(TS_SM);
     canvas.setTextColor(INK_DIM);
     canvas.drawString(LX("SESSIONS", "会话"), lx, ly); ly += 22;
@@ -421,7 +621,7 @@ static void drawTopBand() {
   }
 
   // --- RIGHT: model + budget --------------------------------------------
-  int rx = W/2 + 16, ry = 108;
+  int rx = W/2 + 16, ry = TOP_BAND_Y + 10;
   canvas.setTextSize(TS_SM);
   canvas.setTextColor(INK_DIM);
   canvas.drawString(LX("MODEL", "模型"), rx, ry);  ry += 22;
@@ -431,7 +631,7 @@ static void drawTopBand() {
   // blank rather than rendering a single-glyph that can look like a
   // stray line next to the column divider.
   if (tama.modelName[0]) drawTrunc(tama.modelName, rx, ry, 14);
-  ry = 188;
+  ry = TOP_BAND_Y + 90;
   canvas.setTextSize(TS_SM);
   canvas.setTextColor(INK_DIM);
   canvas.drawString(LX("CONTEXT", "上下文"), rx, ry); ry += 22;
@@ -453,15 +653,37 @@ static void drawTopBand() {
     canvas.drawString(tok, rx, ry);
   }
 
-  drawRule(264);
+  drawRule(TOP_BAND_RULE_Y);
 }
 
 // Slim stats row — level (by tokens), approval/denial tallies. MOOD was
 // dropped: its velocity-based tier isn't a useful signal in a coding
 // workflow, and the stars read ambiguously.
 static void drawStats() {
+  if (uiLandscape) {
+    drawPanel(LS_RIGHT_X, LS_STATS_Y, LS_RIGHT_W, LS_STATS_H);
+    int y = LS_STATS_Y + 10;
+
+    auto drawCell = [&](int x, const char* label, const char* value) {
+      canvas.setTextSize(TS_SM);
+      canvas.setTextColor(INK);
+      canvas.drawString(label, x, y);
+      canvas.setTextSize(TS_MD);
+      canvas.drawString(value, x, y + 22);
+    };
+
+    char lvl[12], appr[12], deny[12];
+    snprintf(lvl,  sizeof(lvl),  "%u", stats().level);
+    snprintf(appr, sizeof(appr), "%u", stats().approvals);
+    snprintf(deny, sizeof(deny), "%u", stats().denials);
+    drawCell(LS_RIGHT_X + 14,  LX("LEVEL", "等级"), lvl);
+    drawCell(LS_RIGHT_X + 126, LX("APPROVED", "批准"), appr);
+    drawCell(LS_RIGHT_X + 248, LX("DENIED", "拒绝"), deny);
+    return;
+  }
+
   canvas.setTextDatum(TL_DATUM);
-  int y = 280;
+  int y = STATS_Y;
 
   auto drawCell = [&](int x, const char* label, const char* value) {
     canvas.setTextSize(TS_SM);
@@ -469,7 +691,7 @@ static void drawStats() {
     canvas.drawString(label, x, y);
     canvas.setTextSize(TS_MD);
     canvas.setTextColor(INK);
-    canvas.drawString(value, x, y + 22);
+    canvas.drawString(value, x, y + 24);
   };
 
   char lvl[12], appr[12], deny[12];
@@ -481,44 +703,89 @@ static void drawStats() {
   drawCell(200, LX("APPROVED", "已批准"),  appr);
   drawCell(380, LX("DENIED",   "已拒绝"),  deny);
 
-  drawRule(326);
+  drawRule(STATS_RULE_Y);
 }
 
 // "Latest reply" — most recent assistant text pulled from the session's
 // transcript_path. Shows whatever Claude last said in prose (not tool
 // calls), so you can glance at the Paper and know what Claude is up to.
 static void drawClaudeSays() {
-  int y = 338;
+  if (uiLandscape) {
+    drawPanel(LS_LEFT_X, LS_REPLY_Y, LS_LEFT_W, LS_REPLY_H);
+    int y = LS_REPLY_Y + 14;
+    canvas.setTextSize(TS_SM);
+    canvas.setTextColor(INK);
+    canvas.drawString(LX("LATEST REPLY", "最新回复"), LS_LEFT_X + 16, y);
+    y += 30;
+    canvas.setTextSize(TS_MD);
+    if (!tama.assistantMsg[0]) {
+      canvas.drawString(LX("(nothing yet)", "（暂无）"), LS_LEFT_X + 16, y);
+      return;
+    }
+    static char wrapped[4][256];
+    uint8_t rows = wrapText(tama.assistantMsg, wrapped, 4, LS_LEFT_W - 32, TS_MD);
+    for (uint8_t i = 0; i < rows; i++) {
+      canvas.drawString(wrapped[i], LS_LEFT_X + 16, y);
+      y += 34;
+    }
+    return;
+  }
+
+  int y = REPLY_Y;
   canvas.setTextSize(TS_SM);
   canvas.setTextColor(INK_DIM);
-  canvas.drawString(LX("LATEST REPLY", "最新回复"), 16, y); y += 24;
+  canvas.drawString(LX("LATEST REPLY", "最新回复"), 16, y); y += 30;
 
   canvas.setTextSize(TS_MD);
   canvas.setTextColor(INK);
   if (!tama.assistantMsg[0]) {
     canvas.setTextColor(INK_DIM);
     canvas.drawString(LX("(nothing yet)", "（暂无）"), 16, y);
-    drawRule(510);
+    drawRule(REPLY_RULE_Y);
     return;
   }
-  static char wrapped[5][256];
+  static char wrapped[4][256];
   // Body width with 16px margins. Call setTextSize BEFORE wrapText so
   // the pixel measurement uses the right render.
-  uint8_t rows = wrapText(tama.assistantMsg, wrapped, 5, W - 32, TS_MD);
+  uint8_t rows = wrapText(tama.assistantMsg, wrapped, 4, W - 32, TS_MD);
   for (uint8_t i = 0; i < rows; i++) {
     canvas.drawString(wrapped[i], 16, y);
-    y += 32;
-    if (y > 500) break;
+    y += 38;
+    if (y > REPLY_RULE_Y - 26) break;
   }
-  drawRule(510);
+  drawRule(REPLY_RULE_Y);
 }
 
 static void drawActivity() {
+  if (uiLandscape) {
+    drawPanel(LS_LEFT_X, LS_ACTIVITY_Y, LS_LEFT_W, LS_ACTIVITY_H);
+    int y = LS_ACTIVITY_Y + 14;
+    canvas.setTextSize(TS_SM);
+    canvas.setTextColor(INK);
+    canvas.drawString(LX("ACTIVITY", "活动"), LS_LEFT_X + 16, y);
+    y += 28;
+    canvas.setTextSize(TS_MD);
+    if (tama.nLines == 0) {
+      canvas.drawString("-", LS_LEFT_X + 16, y);
+      return;
+    }
+    uint8_t show = tama.nLines > 4 ? 4 : tama.nLines;
+    for (uint8_t i = 0; i < show && y < LS_ACTIVITY_Y + LS_ACTIVITY_H - 24; i++) {
+      static char wrapped[2][256];
+      uint8_t rows = wrapText(tama.lines[i], wrapped, 2, LS_LEFT_W - 32, TS_MD);
+      for (uint8_t r = 0; r < rows && y < LS_ACTIVITY_Y + LS_ACTIVITY_H - 24; r++) {
+        canvas.drawString(wrapped[r], LS_LEFT_X + 16, y);
+        y += 30;
+      }
+    }
+    return;
+  }
+
   canvas.setTextDatum(TL_DATUM);
-  int y = 522;
+  int y = ACTIVITY_Y;
   canvas.setTextSize(TS_SM);
   canvas.setTextColor(INK_DIM);
-  canvas.drawString(LX("ACTIVITY", "活动"), 16, y); y += 32;
+  canvas.drawString(LX("ACTIVITY", "活动"), 16, y); y += 30;
 
   canvas.setTextSize(TS_MD);
   if (tama.nLines == 0) {
@@ -526,14 +793,14 @@ static void drawActivity() {
     canvas.drawString("-", 16, y);
     return;
   }
-  uint8_t show = tama.nLines > 8 ? 8 : tama.nLines;
-  for (uint8_t i = 0; i < show && y < H - 190; i++) {
-    canvas.setTextColor(i == 0 ? INK : INK_DIM);
+  uint8_t show = tama.nLines > 6 ? 6 : tama.nLines;
+  for (uint8_t i = 0; i < show && y < FOOTER_TOP - 24; i++) {
+    canvas.setTextColor(INK);
     // Wrap long Chinese entries so they don't clip off the right edge.
     // Most activity lines are short ("14:23 Bash done") and take 1 row.
-    static char wrapped[3][256];
-    uint8_t rows = wrapText(tama.lines[i], wrapped, 3, W - 32, TS_MD);
-    for (uint8_t r = 0; r < rows && y < H - 190; r++) {
+    static char wrapped[2][256];
+    uint8_t rows = wrapText(tama.lines[i], wrapped, 2, W - 32, TS_MD);
+    for (uint8_t r = 0; r < rows && y < FOOTER_TOP - 24; r++) {
       canvas.drawString(wrapped[r], 16, y);
       y += 32;
     }
@@ -541,9 +808,33 @@ static void drawActivity() {
 }
 
 static void drawFooter() {
+  if (uiLandscape) {
+    drawPanel(LS_RIGHT_X, LS_FOOTER_Y, LS_RIGHT_W, LS_FOOTER_H);
+    drawBuddy(LS_RIGHT_X + 96, LS_FOOTER_Y + 78, currentBuddy());
+
+    int rx = LS_RIGHT_X + 180;
+    int ry = LS_FOOTER_Y + 18;
+    canvas.setTextSize(TS_SM);
+    canvas.setTextColor(INK);
+    const char* linkStr =
+        (bleConnected() && dataBtActive()) ? LX("LINKED", "已连接") :
+        bleConnected() ? LX("BLE", "蓝牙") :
+        LX("USB / BLE adv", "USB / 蓝牙广播中");
+    canvas.drawString(linkStr, rx, ry);
+    ry += 28;
+    char line[48];
+    snprintf(line, sizeof(line), LX("%s hold = DND", "%s 长按 = 勿扰"), BTN_UP_LABEL);
+    canvas.drawString(line, rx, ry); ry += 24;
+    snprintf(line, sizeof(line), LX("%s = approve", "%s = 同意"), BTN_APPROVE_LABEL);
+    canvas.drawString(line, rx, ry); ry += 24;
+    snprintf(line, sizeof(line), LX("%s = deny/demo", "%s = 拒绝/演示"), BTN_DENY_LABEL);
+    canvas.drawString(line, rx, ry);
+    return;
+  }
+
   // ASCII buddy at text size 3 is ~216×120, so the footer has to be
   // roughly 160px tall to hold it plus a rule + some air.
-  int top = H - 170;
+  int top = FOOTER_TOP;
   drawRule(top);
 
   // Buddy centered vertically in the footer, left side.
@@ -562,13 +853,106 @@ static void drawFooter() {
   canvas.drawString(linkStr, rx, ry);
   ry += 30;
   canvas.setTextColor(INK);
-  canvas.drawString(LX("UP hold = DND",    "长按 UP = 勿扰"),  rx, ry); ry += 26;
-  canvas.drawString(LX("PUSH = approve",   "PUSH = 同意"),     rx, ry); ry += 26;
-  canvas.drawString(LX("DOWN = deny/demo", "DOWN = 拒绝/演示"), rx, ry);
+  char line[48];
+  snprintf(line, sizeof(line), LX("%s hold = DND", "%s 长按 = 勿扰"), BTN_UP_LABEL);
+  canvas.drawString(line, rx, ry); ry += 26;
+  snprintf(line, sizeof(line), LX("%s = approve", "%s = 同意"), BTN_APPROVE_LABEL);
+  canvas.drawString(line, rx, ry); ry += 26;
+  snprintf(line, sizeof(line), LX("%s = deny/demo", "%s = 拒绝/演示"), BTN_DENY_LABEL);
+  canvas.drawString(line, rx, ry);
 }
 
 static void drawSettings() {
-  canvas.fillCanvas(PAPER);
+  if (uiLandscape) {
+    canvas.fillScreen(PAPER);
+    canvas.setTextDatum(TC_DATUM);
+    canvas.setTextSize(TS_LG);
+    canvas.setTextColor(INK);
+    canvas.drawString(LX("SETTINGS", "设置"), W / 2, 24);
+    drawRule(56);
+
+    canvas.setTextDatum(TL_DATUM);
+    auto row = [&](int x, int y, const char* label, const char* value) {
+      canvas.setTextSize(TS_SM);
+      canvas.setTextColor(INK);
+      canvas.drawString(label, x, y);
+      canvas.setTextSize(TS_MD);
+      canvas.drawString(value, x, y + 18);
+    };
+
+    int x1 = 40, x2 = 500;
+    int y1 = 86;
+    int y2 = 86;
+    char buf[80];
+
+    row(x1, y1, LX("language", "语言"), uiLang == 1 ? "中文  >  English" : "English  >  中文");
+    settingsLangHit = { x1 - 8, y1 - 6, 340, 42 };
+    y1 += 54;
+
+    row(x1, y1, LX("layout", "布局"), LX("Landscape  >  Portrait", "横版  >  竖版"));
+    settingsLayoutHit = { x1 - 8, y1 - 6, 340, 42 };
+    y1 += 54;
+
+    const char* xport = !tama.connected ? LX("offline", "离线")
+                      : (bleConnected() && bleSecure()) ? LX("BLE (paired)", "蓝牙（已配对）")
+                      : (bleConnected()) ? "BLE"
+                      : LX("USB serial", "USB 串口");
+    row(x1, y1, LX("transport", "传输"), xport);
+    y1 += 54;
+
+    snprintf(buf, sizeof(buf), LX("%u total / %u run / %u wait",
+                                  "共 %u / 运行 %u / 等待 %u"),
+             tama.sessionsTotal, tama.sessionsRunning, tama.sessionsWaiting);
+    row(x1, y1, LX("sessions", "会话"), buf);
+    y1 += 54;
+
+    row(x1, y1, LX("device", "设备"), btName);
+    y1 += 54;
+
+    snprintf(buf, sizeof(buf), "%d%%  (%lu mV)", buddyBatteryPercent(), (unsigned long)buddyBatteryVoltage());
+    row(x2, y2, LX("battery", "电量"), buf);
+    y2 += 54;
+
+    row(x2, y2, LX("DND", "勿扰"),
+        dndMode ? LX("ON  (auto-approve)", "开启（自动同意）") : LX("OFF", "关闭"));
+    y2 += 54;
+
+    if (tama.budgetLimit > 0) {
+      char used[16], lim[16];
+      fmtTokens(used, sizeof(used), tama.tokensToday);
+      fmtTokens(lim, sizeof(lim), tama.budgetLimit);
+      snprintf(buf, sizeof(buf), "%s / %s", used, lim);
+      row(x2, y2, LX("budget", "预算"), buf);
+    } else {
+      row(x2, y2, LX("budget", "预算"), LX("(not set)", "（未设）"));
+    }
+    y2 += 54;
+
+    uint32_t up = millis() / 1000;
+    snprintf(buf, sizeof(buf), LX("%luh %02lum", "%lu 小时 %02lu 分"),
+             up / 3600, (up / 60) % 60);
+    row(x2, y2, LX("uptime", "运行"), buf);
+    y2 += 54;
+
+    uint32_t age = (millis() - tama.lastUpdated) / 1000;
+    snprintf(buf, sizeof(buf), LX("%lus ago", "%lu 秒前"), (unsigned long)age);
+    row(x2, y2, LX("last msg", "上次消息"), buf);
+
+    int by = H - 72;
+    int barX = 40, barW = W - 80, barH = 44, gap = 10;
+    int cellW = (barW - gap * 2) / 3;
+    drawActionBar(barX, by, barW, barH,
+                  LX("A  LANG", "A  语言"),
+                  LX("B  LAYOUT", "B  布局"),
+                  LX("C  CLOSE", "C  关闭"));
+    settingsActionLangHit = { barX, by, cellW, barH };
+    settingsActionLayoutHit = { barX + cellW + gap, by, cellW, barH };
+    settingsActionCloseHit = { barX + (cellW + gap) * 2, by, cellW, barH };
+    settingsCloseHit = settingsActionCloseHit;
+    return;
+  }
+
+  canvas.fillScreen(PAPER);
   canvas.setTextDatum(TC_DATUM);
 
   canvas.setTextSize(TS_LG);
@@ -579,31 +963,31 @@ static void drawSettings() {
 
   canvas.setTextDatum(TL_DATUM);
   int y = 110;
-  int lx = 30, vx = 240;
+  int lx = 30;
 
-  auto row = [&](const char* label, const char* value) {
+  auto row = [&](const char* label, const char* value, HitRect* hit = nullptr) {
+    int rowTop = y - 8;
     canvas.setTextSize(TS_SM);
     canvas.setTextColor(INK_DIM);
     canvas.drawString(label, lx, y);
+    y += 20;
     canvas.setTextSize(TS_MD);
     canvas.setTextColor(INK);
-    canvas.drawString(value, vx, y);
-    y += 50;
+    canvas.drawString(value, lx, y);
+    if (hit) *hit = { lx - 10, rowTop, W - 40, 38 };
+    y += 46;
   };
 
   // Language row — tappable. Label shows the current choice; tapping
   // the value area cycles to the other language and persists.
   {
-    int langY = y;
-    canvas.setTextSize(TS_SM);
-    canvas.setTextColor(INK_DIM);
-    canvas.drawString(LX("language", "语言"), lx, y);
-    canvas.setTextSize(TS_MD);
-    canvas.setTextColor(INK);
-    canvas.drawString(uiLang == 1 ? "中文  >  English" : "English  >  中文", vx, y);
-    // Hit region covers the whole row so tapping anywhere on the line works.
-    settingsLangHit = { lx - 10, langY - 8, W - 60, 48 };
-    y += 50;
+    row(LX("language", "语言"), uiLang == 1 ? "中文  >  English" : "English  >  中文", &settingsLangHit);
+  }
+
+  {
+    row(LX("layout", "布局"), uiLandscape ? LX("Landscape  >  Portrait", "横版  >  竖版")
+                                          : LX("Portrait  >  Landscape", "竖版  >  横版"),
+        &settingsLayoutHit);
   }
 
   const char* xport = !tama.connected ? LX("offline", "离线")
@@ -620,9 +1004,8 @@ static void drawSettings() {
 
   row(LX("device", "设备"), btName);
 
-  uint32_t vBat = M5.getBatteryVoltage();
-  int pct = ((int)vBat - 3200) * 100 / (4350 - 3200);
-  if (pct < 0) pct = 0; if (pct > 100) pct = 100;
+  uint32_t vBat = buddyBatteryVoltage();
+  int pct = buddyBatteryPercent();
   snprintf(buf, sizeof(buf), "%d%%  (%lu mV)", pct, (unsigned long)vBat);
   row(LX("battery", "电量"), buf);
 
@@ -655,27 +1038,28 @@ static void drawSettings() {
   canvas.setTextColor(INK_DIM);
   canvas.drawString(LX("TIPS", "提示"), lx, y); y += 32;
   canvas.setTextColor(INK);
-  canvas.drawString(LX("UP hold 1.5s = toggle DND",            "长按 UP 1.5 秒 = 切换勿扰"), lx, y); y += 28;
-  canvas.drawString(LX("PUSH / DOWN = approve / deny",         "PUSH / DOWN = 同意 / 拒绝"),  lx, y); y += 28;
+  snprintf(buf, sizeof(buf), LX("%s hold 1.5s = language", "%s 长按 1.5 秒 = 切语言"), BTN_UP_LABEL);
+  canvas.drawString(buf, lx, y); y += 28;
+  snprintf(buf, sizeof(buf), LX("%s = layout   %s = close", "%s = 布局   %s = 关闭"), BTN_APPROVE_LABEL, BTN_DENY_LABEL);
+  canvas.drawString(buf, lx, y); y += 28;
   canvas.drawString(LX("Tap top-right = open/close this page", "点右上角 = 打开/关闭本页"),    lx, y); y += 28;
   canvas.drawString(LX("Tap option buttons to answer",         "点选项按钮回答问题"),          lx, y);
 
-  // Close button — big, tappable at bottom.
-  int bh = 90;
-  int by = H - bh - 24;
-  int bx = 60, bw = W - 120;
-  for (int d = 0; d < 3; d++)
-    canvas.drawRect(bx + d, by + d, bw - 2*d, bh - 2*d, INK);
-  canvas.setTextDatum(MC_DATUM);
-  canvas.setTextSize(TS_LG);
-  canvas.drawString(LX("CLOSE", "关闭"), W / 2, by + bh / 2);
-  canvas.setTextDatum(TL_DATUM);
-
-  settingsCloseHit = { bx, by, bw, bh };
+  int by = H - 74;
+  int barX = 24, barW = W - 48, barH = 46, gap = 10;
+  int cellW = (barW - gap * 2) / 3;
+  drawActionBar(barX, by, barW, barH,
+                LX("A  LANG", "A  语言"),
+                LX("B  LAYOUT", "B  布局"),
+                LX("C  CLOSE", "C  关闭"));
+  settingsActionLangHit = { barX, by, cellW, barH };
+  settingsActionLayoutHit = { barX + cellW + gap, by, cellW, barH };
+  settingsActionCloseHit = { barX + (cellW + gap) * 2, by, cellW, barH };
+  settingsCloseHit = settingsActionCloseHit;
 }
 
 static void drawIdle() {
-  canvas.fillCanvas(PAPER);
+  canvas.fillScreen(PAPER);
   drawHeader();
   drawTopBand();
   drawStats();
@@ -725,6 +1109,62 @@ static int drawPendingTabs() {
 }
 
 static void drawPermissionCard() {
+  if (uiLandscape) {
+    canvas.setTextDatum(TC_DATUM);
+    canvas.setTextSize(TS_SM);
+    canvas.setTextColor(INK);
+    canvas.drawString(dndMode ? LX("AUTO-APPROVING (DND)", "自动同意（勿扰）")
+                              : LX("PERMISSION REQUESTED", "请求权限"),
+                      W / 2, 18);
+    canvas.setTextSize(TS_LG);
+    canvas.drawString(tama.promptTool[0] ? tama.promptTool : "(tool)", W / 2, 48);
+
+    if (tama.promptProject[0] || tama.promptSid[0]) {
+      char who[48];
+      if (tama.promptProject[0] && tama.promptSid[0]) snprintf(who, sizeof(who), "%.24s  [%s]", tama.promptProject, tama.promptSid);
+      else if (tama.promptProject[0]) snprintf(who, sizeof(who), "%.24s", tama.promptProject);
+      else snprintf(who, sizeof(who), "session %s", tama.promptSid);
+      canvas.setTextSize(TS_SM);
+      canvas.drawString(who, W / 2, 76);
+    }
+
+    int bodyX = 20, bodyY = 98, bodyW = 620, bodyH = 332;
+    int sideX = 666, sideY = 98, sideW = 274, sideH = 332;
+    drawPanel(bodyX, bodyY, bodyW, bodyH);
+    drawPanel(sideX, sideY, sideW, sideH);
+
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(TS_MD);
+    const char* src = tama.promptBody[0] ? tama.promptBody : tama.promptHint;
+    if (src[0]) {
+      static char wrapped[10][256];
+      uint8_t rows = wrapText(src, wrapped, 10, bodyW - 24, TS_MD);
+      int ty = bodyY + 16;
+      for (uint8_t i = 0; i < rows && ty < bodyY + bodyH - 20; i++) {
+        canvas.drawString(wrapped[i], bodyX + 12, ty);
+        ty += 30;
+      }
+    }
+
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextSize(TS_LG);
+    canvas.drawString(BTN_APPROVE_LABEL, sideX + sideW / 2, sideY + 92);
+    canvas.drawString(BTN_DENY_LABEL, sideX + sideW / 2, sideY + 210);
+    canvas.setTextSize(TS_SM);
+    canvas.drawString(LX("approve", "同意"), sideX + sideW / 2, sideY + 126);
+    canvas.drawString(LX("deny", "拒绝"), sideX + sideW / 2, sideY + 244);
+
+    uint32_t waited = (millis() - promptArrivedMs) / 1000;
+    char wline[64];
+    snprintf(wline, sizeof(wline), LX("waiting %lus", "等待 %lu 秒"), (unsigned long)waited);
+    canvas.drawString(wline, sideX + sideW / 2, sideY + sideH - 34);
+    if (responseSent) {
+      canvas.drawString(LX("sent", "已发送"), sideX + sideW / 2, sideY + sideH - 68);
+    }
+    canvas.setTextDatum(TL_DATUM);
+    return;
+  }
+
   canvas.setTextDatum(TC_DATUM);
 
   canvas.setTextSize(TS_SM);
@@ -792,13 +1232,13 @@ static void drawPermissionCard() {
     return;
   }
 
-  // Side-by-side action columns at the bottom — PUSH on left, DOWN on
+  // Side-by-side action columns at the bottom — approve on left, deny on
   // right. More compact than the stacked layout, leaves more body room.
   int cy = 870;
   canvas.setTextSize(TS_LG);
   canvas.setTextColor(INK);
-  canvas.drawString("PUSH", W / 4, cy);
-  canvas.drawString("DOWN", 3 * W / 4, cy);
+  canvas.drawString(BTN_APPROVE_LABEL, W / 4, cy);
+  canvas.drawString(BTN_DENY_LABEL, 3 * W / 4, cy);
   canvas.setTextSize(TS_SM);
   canvas.setTextColor(INK_DIM);
   canvas.drawString(LX("approve", "同意"), W / 4,     cy + 50);
@@ -811,6 +1251,68 @@ static void drawPermissionCard() {
 // the answer back via the daemon; the daemon resolves option index → label
 // and tells Claude "user selected X, proceed".
 static void drawQuestionCard() {
+  if (uiLandscape) {
+    canvas.setTextDatum(TC_DATUM);
+    canvas.setTextSize(TS_SM);
+    canvas.setTextColor(INK);
+    canvas.drawString(LX("QUESTION FROM CLAUDE", "Claude 提问"), W / 2, 18);
+
+    const char* src = tama.promptBody[0] ? tama.promptBody : tama.promptHint;
+    int bodyX = 20, bodyY = 72, bodyW = 400, bodyH = 360;
+    int optX = 450, optY = 72, optW = 490, optH = 360;
+    drawPanel(bodyX, bodyY, bodyW, bodyH);
+    drawPanel(optX, optY, optW, optH);
+
+    canvas.setTextDatum(TL_DATUM);
+    canvas.setTextSize(TS_MD);
+    if (src[0]) {
+      static char wrapped[8][256];
+      uint8_t rows = wrapText(src, wrapped, 8, bodyW - 24, TS_MD);
+      int y = bodyY + 16;
+      for (uint8_t i = 0; i < rows && y < bodyY + bodyH - 20; i++) {
+        canvas.drawString(wrapped[i], bodyX + 12, y);
+        y += 30;
+      }
+    }
+
+    optionRectCount = 0;
+    int n = tama.promptOptionCount > 0 ? tama.promptOptionCount : 1;
+    int gap = 10;
+    int btnH = (optH - gap * (n + 1)) / n;
+    canvas.setTextDatum(MC_DATUM);
+    for (int i = 0; i < tama.promptOptionCount; i++) {
+      int by = optY + gap + i * (btnH + gap);
+      if (i == selectedOption) {
+        canvas.fillRect(optX + 12, by, optW - 24, btnH, INK);
+        canvas.setTextColor(PAPER, INK);
+      } else {
+        drawPanel(optX + 12, by, optW - 24, btnH);
+        canvas.setTextColor(INK);
+      }
+      canvas.setTextSize(TS_MD);
+      char line[72];
+      snprintf(line, sizeof(line), "%d  %s", i + 1, tama.promptOptions[i]);
+      canvas.drawString(line, optX + optW / 2, by + btnH / 2);
+      optionRects[i] = { optX + 12, by, optW - 24, btnH };
+      optionRectCount++;
+    }
+    if (tama.promptOptionCount == 0) {
+      canvas.setTextColor(INK);
+      canvas.drawString("(no options provided)", optX + optW / 2, optY + optH / 2);
+    }
+    canvas.setTextDatum(TC_DATUM);
+    canvas.setTextSize(TS_SM);
+    canvas.setTextColor(INK);
+    uint32_t waited = (millis() - promptArrivedMs) / 1000;
+    char wline[64];
+    snprintf(wline, sizeof(wline), LX("waiting %lus · %s = cancel",
+                                      "等待 %lu 秒 · %s = 取消"),
+             (unsigned long)waited, BTN_DENY_LABEL);
+    canvas.drawString(wline, W / 2, H - 22);
+    canvas.setTextDatum(TL_DATUM);
+    return;
+  }
+
   canvas.setTextDatum(TC_DATUM);
 
   canvas.setTextSize(TS_SM);
@@ -888,15 +1390,15 @@ static void drawQuestionCard() {
     canvas.setTextDatum(TL_DATUM);
   }
 
-  // Footer: waited counter + physical button hint (DOWN = cancel).
+  // Footer: waited counter + physical button hint (deny button = cancel).
   canvas.setTextDatum(TC_DATUM);
   canvas.setTextSize(TS_SM);
   canvas.setTextColor(INK_DIM);
   uint32_t waited = (millis() - promptArrivedMs) / 1000;
   char wline[64]; snprintf(wline, sizeof(wline),
-                           LX("waiting %lus   ·   DOWN = cancel",
-                              "等待 %lu 秒   ·   DOWN = 取消"),
-                           (unsigned long)waited);
+                           LX("waiting %lus   ·   %s = cancel",
+                              "等待 %lu 秒   ·   %s = 取消"),
+                           (unsigned long)waited, BTN_DENY_LABEL);
   canvas.drawString(wline, W / 2, 910);
 
   if (responseSent) {
@@ -909,7 +1411,7 @@ static void drawQuestionCard() {
 }
 
 static void drawApproval() {
-  canvas.fillCanvas(PAPER);
+  canvas.fillScreen(PAPER);
   // No tabs on the approval card. Approvals FIFO out of the daemon's
   // queue; only one is shown at a time, resolving it pops the next.
   tabRectCount = 0;
@@ -919,7 +1421,24 @@ static void drawApproval() {
 }
 
 static void drawSplash() {
-  canvas.fillCanvas(PAPER);
+  if (uiLandscape) {
+    canvas.fillScreen(PAPER);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextSize(TS_XXL);
+    canvas.setTextColor(INK);
+    canvas.drawString("Paper Buddy", W / 2, 90);
+    canvas.setTextDatum(TL_DATUM);
+    drawBuddy(W / 2, H / 2 + 10, B_IDLE);
+    canvas.setTextDatum(MC_DATUM);
+    canvas.setTextSize(TS_MD);
+    canvas.drawString(BUDDY_DEVICE_LABEL, W / 2, H - 90);
+    canvas.setTextSize(TS_SM);
+    canvas.drawString(btName, W / 2, H - 56);
+    canvas.setTextDatum(TL_DATUM);
+    return;
+  }
+
+  canvas.fillScreen(PAPER);
   canvas.setTextDatum(MC_DATUM);
   canvas.setTextSize(TS_XXL);
   canvas.setTextColor(INK);
@@ -929,14 +1448,29 @@ static void drawSplash() {
   canvas.setTextDatum(MC_DATUM);
   canvas.setTextSize(TS_MD);
   canvas.setTextColor(INK_DIM);
-  canvas.drawString("M5Paper V1.1", W/2, H/2 + 120);
+  canvas.drawString(BUDDY_DEVICE_LABEL, W/2, H/2 + 120);
   canvas.setTextSize(TS_SM);
   canvas.drawString(btName, W/2, H/2 + 170);
   canvas.setTextDatum(TL_DATUM);
 }
 
 static void drawPasskey() {
-  canvas.fillCanvas(PAPER);
+  if (uiLandscape) {
+    canvas.fillScreen(PAPER);
+    canvas.setTextDatum(TC_DATUM);
+    canvas.setTextSize(TS_MD);
+    canvas.setTextColor(INK);
+    canvas.drawString(LX("BLUETOOTH PAIRING", "蓝牙配对"), W / 2, 96);
+    canvas.setTextSize(TS_HUGE);
+    char b[8]; snprintf(b, sizeof(b), "%06lu", (unsigned long)blePasskey());
+    canvas.drawString(b, W / 2, 212);
+    canvas.setTextSize(TS_SM);
+    canvas.drawString(LX("enter this on the desktop", "在电脑上输入这个数字"), W / 2, 316);
+    canvas.setTextDatum(TL_DATUM);
+    return;
+  }
+
+  canvas.fillScreen(PAPER);
   canvas.setTextDatum(TC_DATUM);
   canvas.setTextSize(TS_MD);
   canvas.setTextColor(INK_DIM);
@@ -958,23 +1492,35 @@ static void drawPasskey() {
 // GL16 = 16-gray without flash — preserves TTF anti-aliasing so text
 // doesn't look muddy after many partial updates. Slightly slower than
 // DU (~450ms vs 260ms) but much cleaner for small-font content.
-static void pushFull()    { canvas.pushCanvas(0, 0, UPDATE_MODE_GC16); lastFullRefreshMs = lastPartialRefreshMs = millis(); }
-static void pushPartial() { canvas.pushCanvas(0, 0, UPDATE_MODE_GL16); lastPartialRefreshMs = millis(); }
+static bool pushFull() {
+  if (!buddyPushFullDisplay()) return false;
+  lastFullRefreshMs = lastPartialRefreshMs = millis();
+  return true;
+}
+static bool pushPartial() {
+  if (!buddyPushPartialDisplay()) return false;
+  lastPartialRefreshMs = millis();
+  return true;
+}
 
-static void repaint(bool wantFull) {
+static bool repaint(bool wantFull) {
   uint32_t pk = blePasskey();
+  bool pairingMode = pk != 0;
   bool promptMode = tama.promptId[0] != 0;
+  bool overlayMode = pairingMode || settingsOpen || promptMode;
 
-  if (pk)                  drawPasskey();
+  buddyFrameBegin();
+  if (pairingMode)         drawPasskey();
   else if (settingsOpen)   drawSettings();
   else if (promptMode)     drawApproval();
   else                     drawIdle();
+  buddyFrameEnd();
 
-  bool modeChanged = promptMode != lastMode;
-  lastMode = promptMode;
+  bool modeChanged = overlayMode != lastMode;
+  lastMode = overlayMode;
 
-  if (wantFull || modeChanged) pushFull();
-  else                          pushPartial();
+  if (wantFull || modeChanged) return pushFull();
+  return pushPartial();
 }
 
 // -----------------------------------------------------------------------------
@@ -984,6 +1530,7 @@ static void dndLoad() {
   dndMode = p.getBool("dnd", false);
   uiLang  = p.getUChar("lang", 0);
   if (uiLang > 1) uiLang = 0;
+  uiLandscape = p.getBool("land", BUDDY_DEFAULT_LANDSCAPE);
   p.end();
 }
 static void dndSave() {
@@ -996,9 +1543,69 @@ static void langSave() {
   p.putUChar("lang", uiLang);
   p.end();
 }
+static void layoutSave() {
+  Preferences p; p.begin("buddy", false);
+  p.putBool("land", uiLandscape);
+  p.end();
+}
+
+#if CONFIG_IDF_TARGET_ESP32S3 && !defined(BUDDY_TARGET_PAPERS3)
+static bool isValidEsp32S3Gpio(int pin) {
+  return pin >= 0 && pin <= 48 && pin != 22 && pin != 23 && pin != 24 && pin != 25;
+}
+
+static bool requireEsp32S3Gpio(const char* name, int pin) {
+  if (isValidEsp32S3Gpio(pin)) return true;
+  Serial.printf("[boot] invalid ESP32-S3 pin for %s: GPIO%d\n", name, pin);
+  return false;
+}
+
+static bool validateEsp32S3PinMap() {
+  bool ok = true;
+  ok &= requireEsp32S3Gpio("M5EPD_MAIN_PWR_PIN",   M5EPD_MAIN_PWR_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_CS_PIN",         M5EPD_CS_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_SCK_PIN",        M5EPD_SCK_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_MOSI_PIN",       M5EPD_MOSI_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_BUSY_PIN",       M5EPD_BUSY_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_MISO_PIN",       M5EPD_MISO_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_EXT_PWR_EN_PIN", M5EPD_EXT_PWR_EN_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_EPD_PWR_EN_PIN", M5EPD_EPD_PWR_EN_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_KEY_RIGHT_PIN",  M5EPD_KEY_RIGHT_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_KEY_PUSH_PIN",   M5EPD_KEY_PUSH_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_KEY_LEFT_PIN",   M5EPD_KEY_LEFT_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_BAT_VOL_PIN",    M5EPD_BAT_VOL_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_TOUCH_SDA_PIN",  M5EPD_TOUCH_SDA_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_TOUCH_SCL_PIN",  M5EPD_TOUCH_SCL_PIN);
+  ok &= requireEsp32S3Gpio("M5EPD_TOUCH_INT_PIN",  M5EPD_TOUCH_INT_PIN);
+  return ok;
+}
+#endif
 
 void setup() {
-  M5.begin(true, true, true, true, true);
+#if CONFIG_IDF_TARGET_ESP32S3 && !defined(BUDDY_TARGET_PAPERS3)
+  Serial.begin(115200);
+  delay(50);
+  Serial.printf("[boot] env=%s device=%s target=esp32s3\n",
+                BUDDY_PIO_ENV, BUDDY_DEVICE_LABEL);
+  if (!validateEsp32S3PinMap()) {
+    Serial.println("[boot] default M5Paper pin map is not valid on ESP32-S3.");
+    Serial.println("[boot] set M5EPD_* build flags to match your actual wiring, then rebuild.");
+    while (true) delay(1000);
+  }
+#else
+  Serial.begin(115200);
+  delay(50);
+  Serial.printf("[boot] env=%s device=%s target=%s\n",
+                BUDDY_PIO_ENV, BUDDY_DEVICE_LABEL,
+#ifdef BUDDY_TARGET_PAPERS3
+                "papers3"
+#else
+                "esp32"
+#endif
+                );
+#endif
+
+  buddyBegin();
 
   // Print the cause of the previous reset so crash loops can be debugged
   // over serial. rtc_get_reset_reason() codes:
@@ -1009,9 +1616,8 @@ void setup() {
                 (int)rtc_get_reset_reason(0), (int)rtc_get_reset_reason(1),
                 ESP.getFreeHeap());
 
-  M5.EPD.SetRotation(90);
-  M5.TP.SetRotation(90);
-  M5.EPD.Clear(true);
+  buddyTouchSetRotation(90);
+  buddyClearDisplay(true);
 
   if (!LittleFS.begin(true)) {
     Serial.println("[fs] LittleFS mount failed — continuing without it");
@@ -1030,40 +1636,59 @@ void setup() {
     }
   }
 
-  canvas.createCanvas(W, H);
+  buddyCreateCanvas(W, H);
 
-  // Load the CJK TTF from LittleFS. loadFont returns esp_err_t — ESP_OK = 0
-  // means success, so we compare instead of treating it as bool.
+#ifdef BUDDY_TARGET_PAPERS3
+  canvas.setFont(&fonts::efontCN_16);
+  bool fontOk = true;
+  Serial.println("[font] using built-in M5GFX efontCN_16");
+#else
+  // Load the CJK TTF from LittleFS.
+  // M5EPD's loadFont returns esp_err_t — ESP_OK = 0 means success, so we
+  // compare instead of treating it as bool.
   esp_err_t rc = canvas.loadFont("/cjk.ttf", LittleFS);
+  bool fontOk = (rc == ESP_OK);
   Serial.printf("[font] loadFont cjk.ttf rc=%d (%s)\n", (int)rc,
-                rc == ESP_OK ? "OK" : "FAIL");
-  if (rc == ESP_OK) {
+                fontOk ? "OK" : "FAIL");
+  if (fontOk) {
     // Warm a render for every size we draw at. 128-glyph cache per size
     // keeps common CJK glyphs resident without blowing PSRAM.
     for (int sz : { TS_SM, TS_MD, TS_LG, TS_XL, TS_XXL, TS_HUGE }) {
       canvas.createRender(sz, 128);
     }
   }
+#endif
 
   statsLoad();
   settingsLoad();
   petNameLoad();
   dndLoad();
+  buddySetLandscape(uiLandscape);
   startBt();
 
   drawSplash();
-  pushFull();
+  (void)pushFull();
   delay(1500);
 
   redrawPending = true;
   lastFullRefreshMs = millis();
+  lastPartialRefreshMs = 0;   // allow the first dashboard repaint immediately
 }
 
 void loop() {
+  buddySetTouchButtonHeight(settingsOpen ? 56 : 0);
   M5.update();
   uint32_t now = millis();
 
   dataPoll(&tama);
+
+  static uint32_t lastPasskey = 0;
+  uint32_t currentPasskey = blePasskey();
+  if (currentPasskey != lastPasskey) {
+    lastPasskey = currentPasskey;
+    redrawPending = true;
+    lastPartialRefreshMs = 0;
+  }
 
   if (strcmp(tama.promptId, lastPromptId) != 0) {
     strncpy(lastPromptId, tama.promptId, sizeof(lastPromptId) - 1);
@@ -1082,17 +1707,113 @@ void loop() {
   bool inPrompt = tama.promptId[0] && !responseSent;
   bool isQuestion = inPrompt && strcmp(tama.promptKind, "question") == 0;
 
+  auto handleTouchRelease = [&](int lastX, int lastY) {
+    Serial.printf("[tp] up   @ %d,%d  (inPrompt=%d isQ=%d opts=%u settings=%d)\n",
+                  lastX, lastY, (int)inPrompt, (int)isQuestion,
+                  (unsigned)optionRectCount, (int)settingsOpen);
+
+    auto hitTest = [&](const HitRect& r) {
+      return lastX >= r.x && lastX < r.x + r.w &&
+             lastY >= r.y && lastY < r.y + r.h;
+    };
+
+    if (settingsOpen) {
+      // Language row first — tap toggles EN/ZH in place.
+      if (hitTest(settingsActionLangHit) || hitTest(settingsLangHit)) {
+        uiLang = uiLang == 0 ? 1 : 0;
+        langSave();
+        lastFullRefreshMs = 0;
+        lastPartialRefreshMs = 0;
+        redrawPending = true;
+      } else if (hitTest(settingsActionLayoutHit) || hitTest(settingsLayoutHit)) {
+        uiLandscape = !uiLandscape;
+        layoutSave();
+        buddySetLandscape(uiLandscape);
+        settingsOpen = true;
+        lastPartialRefreshMs = 0;
+        forceFullRefresh = true;
+        redrawPending = true;
+      } else if (hitTest(settingsActionCloseHit) || hitTest(settingsCloseHit) || hitTest(settingsTrigger)) {
+        settingsOpen = false;
+        lastPartialRefreshMs = 0;
+        forceFullRefresh = true;
+        redrawPending = true;
+      } else {
+        settingsOpen = false;
+        lastPartialRefreshMs = 0;
+        forceFullRefresh = true;
+        redrawPending = true;
+      }
+    } else if (!inPrompt && hitTest(settingsTrigger)) {
+      settingsOpen = true;
+      lastPartialRefreshMs = 0;
+      forceFullRefresh = true;
+      redrawPending = true;
+    } else if (!inPrompt && sessionRectCount > 1) {
+      for (uint8_t i = 0; i < sessionRectCount; i++) {
+        if (hitTest(sessionRects[i])) {
+          char cmd[80];
+          snprintf(cmd, sizeof(cmd), "{\"cmd\":\"focus_session\",\"sid\":\"%s\"}",
+                   tama.sessions[i].full[0] ? tama.sessions[i].full : tama.sessions[i].sid);
+          sendCmd(cmd);
+          break;
+        }
+      }
+    } else if (inPrompt && tabRectCount > 1 && lastY < 60) {
+      for (uint8_t i = 0; i < tabRectCount; i++) {
+        if (hitTest(tabRects[i])) {
+          char cmd[96];
+          snprintf(cmd, sizeof(cmd), "{\"cmd\":\"focus\",\"id\":\"%s\"}",
+                   tama.pending[i].id);
+          sendCmd(cmd);
+          break;
+        }
+      }
+    } else if (isQuestion && optionRectCount > 0) {
+      for (uint8_t i = 0; i < optionRectCount; i++) {
+        const HitRect& r = optionRects[i];
+        if (lastX >= r.x && lastX < r.x + r.w &&
+            lastY >= r.y && lastY < r.y + r.h) {
+          Serial.printf("[tp] HIT option %u\n", (unsigned)i);
+          selectedOption = i;
+          responseSent = true;
+          lastPartialRefreshMs = 0;
+          repaint(false);
+
+          char cmd[96];
+          snprintf(cmd, sizeof(cmd),
+                   "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"option:%u\"}",
+                   tama.promptId, (unsigned)i);
+          sendCmd(cmd);
+          uint32_t tookS = (now - promptArrivedMs) / 1000;
+          statsOnApproval(tookS);
+          celebrateUntil = now + 4000;
+          redrawPending = true;
+          break;
+        }
+      }
+    }
+  };
+
+  static int  lastX = 0, lastY = 0;
+  static bool hadTouch = false;
+#ifdef BUDDY_TARGET_PAPERS3
+  auto td = M5.Touch.getDetail();
+  if (td.isPressed()) {
+    lastX = td.x;
+    lastY = td.y;
+    hadTouch = true;
+    Serial.printf("[tp] down @ %d,%d\n", lastX, lastY);
+  } else if (hadTouch && td.wasReleased()) {
+    hadTouch = false;
+    handleTouchRelease(lastX, lastY);
+  }
+#else
   // Touch input. GT911 is interrupt-driven: available() goes true on
   // each finger-down/finger-up event. We track the latest coords while
   // finger is pressed, then hit-test when isFingerUp() fires.
-  //
-  // Early version used getFingerNum() to detect presence — that's a
-  // latch on the last non-zero count, so it never went back to 0 after
-  // a lift. isFingerUp() is the right primitive.
   if (M5.TP.available()) {
     M5.TP.update();
-    static int  lastX = 0, lastY = 0;
-    static bool hadTouch = false;
 
     bool up = M5.TP.isFingerUp();
     if (!up) {
@@ -1102,86 +1823,11 @@ void loop() {
       Serial.printf("[tp] down @ %d,%d\n", lastX, lastY);
     } else if (hadTouch) {
       hadTouch = false;
-      Serial.printf("[tp] up   @ %d,%d  (inPrompt=%d isQ=%d opts=%u settings=%d)\n",
-                    lastX, lastY, (int)inPrompt, (int)isQuestion,
-                    (unsigned)optionRectCount, (int)settingsOpen);
-
-      auto hitTest = [&](const HitRect& r) {
-        return lastX >= r.x && lastX < r.x + r.w &&
-               lastY >= r.y && lastY < r.y + r.h;
-      };
-
-      if (settingsOpen) {
-        // Language row first — tap toggles EN/ZH in place.
-        if (hitTest(settingsLangHit)) {
-          uiLang = uiLang == 0 ? 1 : 0;
-          langSave();
-          lastFullRefreshMs = 0;     // full GC16 to cleanly redraw all glyphs
-          redrawPending = true;
-        } else {
-          // Anywhere else closes the page.
-          settingsOpen = false;
-          lastFullRefreshMs = 0;
-          redrawPending = true;
-        }
-      } else if (!inPrompt && hitTest(settingsTrigger)) {
-        settingsOpen = true;
-        lastFullRefreshMs = 0;
-        redrawPending = true;
-      } else if (!inPrompt && sessionRectCount > 1) {
-        // Tap a session row on the dashboard → tell daemon to focus
-        // that session. Dashboard view flips on next heartbeat.
-        for (uint8_t i = 0; i < sessionRectCount; i++) {
-          if (hitTest(sessionRects[i])) {
-            char cmd[80];
-            snprintf(cmd, sizeof(cmd), "{\"cmd\":\"focus_session\",\"sid\":\"%s\"}",
-                     tama.sessions[i].full[0] ? tama.sessions[i].full : tama.sessions[i].sid);
-            sendCmd(cmd);
-            break;
-          }
-        }
-      } else if (inPrompt && tabRectCount > 1 && lastY < 60) {
-        // Tab strip hit-test (top 60px of screen only) — switch focus
-        // among pending prompts. Send focus cmd; daemon swaps ACTIVE_PROMPT
-        // and the next heartbeat flips our view.
-        for (uint8_t i = 0; i < tabRectCount; i++) {
-          if (hitTest(tabRects[i])) {
-            char cmd[96];
-            snprintf(cmd, sizeof(cmd), "{\"cmd\":\"focus\",\"id\":\"%s\"}",
-                     tama.pending[i].id);
-            sendCmd(cmd);
-            break;
-          }
-        }
-      } else if (isQuestion && optionRectCount > 0) {
-        for (uint8_t i = 0; i < optionRectCount; i++) {
-          const HitRect& r = optionRects[i];
-          if (lastX >= r.x && lastX < r.x + r.w &&
-              lastY >= r.y && lastY < r.y + r.h) {
-            Serial.printf("[tp] HIT option %u\n", (unsigned)i);
-            // Visual feedback first — invert the tapped button and paint
-            // before anything clears the card.
-            selectedOption = i;
-            responseSent = true;
-            lastPartialRefreshMs = 0;
-            repaint(false);
-
-            char cmd[96];
-            snprintf(cmd, sizeof(cmd),
-                     "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"option:%u\"}",
-                     tama.promptId, (unsigned)i);
-            sendCmd(cmd);
-            uint32_t tookS = (now - promptArrivedMs) / 1000;
-            statsOnApproval(tookS);
-            celebrateUntil = now + 4000;
-            redrawPending = true;
-            break;
-          }
-        }
-      }
+      handleTouchRelease(lastX, lastY);
     }
     M5.TP.flush();
   }
+#endif
 
 
   if (inPrompt && dndMode && !dndAutoSent && now - promptArrivedMs >= DND_AUTO_DELAY_MS) {
@@ -1196,8 +1842,16 @@ void loop() {
     redrawPending = true;
   }
 
-  if (M5.BtnP.wasPressed()) {
-    if (inPrompt) {
+  if (BTN_APPROVE.wasPressed()) {
+    if (settingsOpen) {
+      uiLandscape = !uiLandscape;
+      layoutSave();
+      buddySetLandscape(uiLandscape);
+      settingsOpen = true;
+      lastPartialRefreshMs = 0;
+      forceFullRefresh = true;
+      redrawPending = true;
+    } else if (inPrompt) {
       char cmd[96];
       snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"once\"}", tama.promptId);
       sendCmd(cmd);
@@ -1211,8 +1865,13 @@ void loop() {
     }
   }
 
-  if (M5.BtnR.wasPressed()) {
-    if (inPrompt) {
+  if (BTN_DENY.wasPressed()) {
+    if (settingsOpen) {
+      settingsOpen = false;
+      lastPartialRefreshMs = 0;
+      forceFullRefresh = true;
+      redrawPending = true;
+    } else if (inPrompt) {
       char cmd[96];
       snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
       sendCmd(cmd);
@@ -1226,14 +1885,22 @@ void loop() {
   }
 
   static bool upLongFired = false;
-  if (M5.BtnL.pressedFor(1500) && !upLongFired && !inPrompt) {
+  if (BTN_UP.pressedFor(1500) && !upLongFired && !inPrompt) {
     upLongFired = true;
-    dndMode = !dndMode;
-    dndSave();
-    lastFullRefreshMs = 0;
-    redrawPending = true;
+    if (settingsOpen) {
+      uiLang = uiLang == 0 ? 1 : 0;
+      langSave();
+      lastPartialRefreshMs = 0;
+      forceFullRefresh = true;
+      redrawPending = true;
+    } else {
+      dndMode = !dndMode;
+      dndSave();
+      forceFullRefresh = true;
+      redrawPending = true;
+    }
   }
-  if (M5.BtnL.wasReleased()) {
+  if (BTN_UP.wasReleased()) {
     if (!upLongFired && !inPrompt) {
       lastFullRefreshMs = 0;
       redrawPending = true;
@@ -1265,6 +1932,8 @@ void loop() {
     lastDirty = tama.dirty; lastBudget = tama.budgetLimit;
     strncpy(lastBranch, tama.branch, sizeof(lastBranch) - 1); lastBranch[sizeof(lastBranch) - 1] = 0;
     strncpy(lastModel, tama.modelName, sizeof(lastModel) - 1); lastModel[sizeof(lastModel) - 1] = 0;
+    // Bypass the 30s idle throttle when real state changes arrive from the daemon.
+    lastPartialRefreshMs = 0;
     redrawPending = true;
   }
 
@@ -1282,11 +1951,13 @@ void loop() {
   bool interactive = inPrompt || settingsOpen;
   uint32_t partialGap = interactive ? 2000UL : 30000UL;
   bool canPartial = (now - lastPartialRefreshMs) >= partialGap;
-  bool shouldFull = (now - lastFullRefreshMs) >= 120000UL;   // GC16 sweep every 2 min
+  bool shouldFull = forceFullRefresh || (now - lastFullRefreshMs) >= 120000UL;   // GC16 sweep every 2 min
 
-  if (redrawPending && (canPartial || shouldFull)) {
-    repaint(shouldFull);
-    redrawPending = false;
+  if (redrawPending && !buddyDisplayBusy() && (canPartial || shouldFull)) {
+    if (repaint(shouldFull)) {
+      redrawPending = false;
+      forceFullRefresh = false;
+    }
   }
 
   delay(20);

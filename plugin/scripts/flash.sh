@@ -25,14 +25,17 @@ if [ -z "$PORT" ]; then
   exit 1
 fi
 
+PIO_ENV="${BUDDY_PIO_ENV:-papers3}"
+
 cd "$REPO_ROOT"
 
+echo "==> Using PlatformIO env: $PIO_ENV"
 echo "==> 1/2 Uploading filesystem (CJK font, ~3.4MB, takes ~90s)..."
-pio run -e m5paper -t uploadfs --upload-port "$PORT"
+pio run -e "$PIO_ENV" -t uploadfs --upload-port "$PORT"
 
 echo ""
 echo "==> 2/2 Uploading firmware to $PORT..."
-pio run -e m5paper -t upload --upload-port "$PORT"
+pio run -e "$PIO_ENV" -t upload --upload-port "$PORT"
 
 echo ""
 echo "==> Done."
