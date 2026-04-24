@@ -7,11 +7,11 @@
 //   - footer: state-driven vector buddy face + link/button hints
 // Full-screen approval card takes over when a permission decision is needed.
 //
-// Controls (side buttons, top→bottom in portrait):
-//   BTN_UP        short: force a full refresh / redraw
-//                 long (1.5s): toggle DND mode (auto-approve)
-//   BTN_APPROVE   approve when prompt is up, otherwise nudge a redraw
-//   BTN_DENY      deny when prompt is up, otherwise toggle demo mode
+// Controls:
+//   - tap sessions to switch focus
+//   - tap top-right to open settings
+//   - use the settings bottom action bar to switch language / layout / close
+//   - use the prompt action areas to approve / deny / answer questions
 
 #include <stdarg.h>
 #include <rom/rtc.h>
@@ -822,13 +822,13 @@ static void drawFooter() {
         LX("USB / BLE adv", "USB / 蓝牙广播中");
     canvas.drawString(linkStr, rx, ry);
     ry += 28;
-    char line[48];
-    snprintf(line, sizeof(line), LX("%s hold = DND", "%s 长按 = 勿扰"), BTN_UP_LABEL);
-    canvas.drawString(line, rx, ry); ry += 24;
-    snprintf(line, sizeof(line), LX("%s = approve", "%s = 同意"), BTN_APPROVE_LABEL);
-    canvas.drawString(line, rx, ry); ry += 24;
-    snprintf(line, sizeof(line), LX("%s = deny/demo", "%s = 拒绝/演示"), BTN_DENY_LABEL);
-    canvas.drawString(line, rx, ry);
+    canvas.setTextColor(INK_DIM);
+    canvas.drawString(dndMode ? LX("DND ON", "勿扰已开")
+                              : LX("DND OFF", "勿扰已关"), rx, ry);
+    ry += 24;
+    canvas.setTextColor(INK);
+    canvas.drawString(LX("Tap session to focus", "点会话切换焦点"), rx, ry); ry += 24;
+    canvas.drawString(LX("Top-right = settings", "右上角 = 设置"), rx, ry);
     return;
   }
 
@@ -840,7 +840,7 @@ static void drawFooter() {
   // Buddy centered vertically in the footer, left side.
   drawBuddy(120, top + 80, currentBuddy());
 
-  // Right column: link state + button legend.
+  // Right column: link state + touch-first hints.
   canvas.setTextSize(TS_SM);
   int rx = 254;
   int ry = top + 16;
@@ -851,15 +851,14 @@ static void drawFooter() {
       bleConnected()   ? LX("BLE connected", "蓝牙已连") :
                          LX("USB / BLE adv", "USB / 蓝牙广播中");
   canvas.drawString(linkStr, rx, ry);
-  ry += 30;
+  ry += 28;
+  canvas.setTextColor(INK_DIM);
+  canvas.drawString(dndMode ? LX("DND ON", "勿扰已开")
+                            : LX("DND OFF", "勿扰已关"), rx, ry);
+  ry += 24;
   canvas.setTextColor(INK);
-  char line[48];
-  snprintf(line, sizeof(line), LX("%s hold = DND", "%s 长按 = 勿扰"), BTN_UP_LABEL);
-  canvas.drawString(line, rx, ry); ry += 26;
-  snprintf(line, sizeof(line), LX("%s = approve", "%s = 同意"), BTN_APPROVE_LABEL);
-  canvas.drawString(line, rx, ry); ry += 26;
-  snprintf(line, sizeof(line), LX("%s = deny/demo", "%s = 拒绝/演示"), BTN_DENY_LABEL);
-  canvas.drawString(line, rx, ry);
+  canvas.drawString(LX("Tap session to focus", "点会话切换焦点"), rx, ry); ry += 24;
+  canvas.drawString(LX("Top-right = settings", "右上角 = 设置"), rx, ry);
 }
 
 static void drawSettings() {
@@ -889,7 +888,9 @@ static void drawSettings() {
     settingsLangHit = { x1 - 8, y1 - 6, 340, 42 };
     y1 += 54;
 
-    row(x1, y1, LX("layout", "布局"), LX("Landscape  >  Portrait", "横版  >  竖版"));
+    row(x1, y1, LX("layout", "布局"),
+        uiLandscape ? LX("Landscape  >  Portrait", "横版  >  竖版")
+                    : LX("Portrait  >  Landscape", "竖版  >  横版"));
     settingsLayoutHit = { x1 - 8, y1 - 6, 340, 42 };
     y1 += 54;
 
@@ -942,9 +943,9 @@ static void drawSettings() {
     int barX = 40, barW = W - 80, barH = 44, gap = 10;
     int cellW = (barW - gap * 2) / 3;
     drawActionBar(barX, by, barW, barH,
-                  LX("A  LANG", "A  语言"),
-                  LX("B  LAYOUT", "B  布局"),
-                  LX("C  CLOSE", "C  关闭"));
+                  LX("LANG", "语言"),
+                  LX("LAYOUT", "布局"),
+                  LX("CLOSE", "关闭"));
     settingsActionLangHit = { barX, by, cellW, barH };
     settingsActionLayoutHit = { barX + cellW + gap, by, cellW, barH };
     settingsActionCloseHit = { barX + (cellW + gap) * 2, by, cellW, barH };
@@ -1038,20 +1039,21 @@ static void drawSettings() {
   canvas.setTextColor(INK_DIM);
   canvas.drawString(LX("TIPS", "提示"), lx, y); y += 32;
   canvas.setTextColor(INK);
-  snprintf(buf, sizeof(buf), LX("%s hold 1.5s = language", "%s 长按 1.5 秒 = 切语言"), BTN_UP_LABEL);
-  canvas.drawString(buf, lx, y); y += 28;
-  snprintf(buf, sizeof(buf), LX("%s = layout   %s = close", "%s = 布局   %s = 关闭"), BTN_APPROVE_LABEL, BTN_DENY_LABEL);
-  canvas.drawString(buf, lx, y); y += 28;
-  canvas.drawString(LX("Tap top-right = open/close this page", "点右上角 = 打开/关闭本页"),    lx, y); y += 28;
-  canvas.drawString(LX("Tap option buttons to answer",         "点选项按钮回答问题"),          lx, y);
+  canvas.drawString(LX("Tap a row to change value", "点对应行可直接切换"), lx, y); y += 28;
+  canvas.drawString(LX("Bottom bar: lang / layout / close",
+                       "底栏：语言 / 布局 / 关闭"), lx, y); y += 28;
+  canvas.drawString(LX("Top-right = close settings",
+                       "右上角 = 关闭设置"), lx, y); y += 28;
+  canvas.drawString(LX("Changes save automatically",
+                       "修改会自动保存"), lx, y);
 
   int by = H - 74;
   int barX = 24, barW = W - 48, barH = 46, gap = 10;
   int cellW = (barW - gap * 2) / 3;
   drawActionBar(barX, by, barW, barH,
-                LX("A  LANG", "A  语言"),
-                LX("B  LAYOUT", "B  布局"),
-                LX("C  CLOSE", "C  关闭"));
+                LX("LANG", "语言"),
+                LX("LAYOUT", "布局"),
+                LX("CLOSE", "关闭"));
   settingsActionLangHit = { barX, by, cellW, barH };
   settingsActionLayoutHit = { barX + cellW + gap, by, cellW, barH };
   settingsActionCloseHit = { barX + (cellW + gap) * 2, by, cellW, barH };
