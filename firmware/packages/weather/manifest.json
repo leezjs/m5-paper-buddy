@@ -1,0 +1,15 @@
+{
+  "chip": "esp32s3",
+  "compatibility": "switchable",
+  "flash_size": 16777216,
+  "id": "weather",
+  "install_mode": "runtime-slot",
+  "name": "weather",
+  "runtime": {
+    "app_file": "app.bin",
+    "app_offset": 0,
+    "data_file": null
+  },
+  "source_image": "weather.bin",
+  "source_type": "burner-export"
+}

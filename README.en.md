@@ -210,6 +210,15 @@ pio run -e papers3 -t upload    # flash firmware
 pio run -e papers3 -t uploadfs  # refresh LittleFS (only when font changes)
 ```
 
+### Multi-firmware groundwork
+
+The repository now has two new PaperS3 build targets:
+
+- `papers3_buddy` — the existing buddy runtime on the new launcher/runtime partition map
+- `papers3_launcher` — a minimal launcher firmware stub used to verify the new flash layout
+
+The legacy `papers3` target remains available during the migration.
+
 Daemon iteration:
 
 ```bash

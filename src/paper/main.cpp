@@ -15,6 +15,8 @@
 
 #include <stdarg.h>
 #include <rom/rtc.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 #include "paper_compat.h"
 #include "../ble_bridge.h"
 #include "data_paper.h"
@@ -181,6 +183,27 @@ static bool     uiLandscape = BUDDY_DEFAULT_LANDSCAPE;
 // Short-lived "celebrate" flash after any approve/deny so the buddy face
 // briefly shows a reaction even when no data-driven state change follows.
 static uint32_t celebrateUntil = 0;
+
+static bool returnToLauncher() {
+  const esp_partition_t* otadata = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, nullptr);
+  if (otadata == nullptr) {
+    Serial.println("[boot] otadata partition not found");
+    return false;
+  }
+
+  esp_err_t rc = esp_partition_erase_range(otadata, 0, otadata->size);
+  if (rc != ESP_OK) {
+    Serial.printf("[boot] failed to erase otadata for launcher boot: 0x%x\n",
+                  (unsigned)rc);
+    return false;
+  }
+
+  Serial.println("[boot] otadata erased, rebooting to factory launcher");
+  delay(200);
+  esp_restart();
+  return true;
+}
 
 static void sendCmd(const char* json) {
   Serial.println(json);
@@ -383,6 +406,7 @@ static HitRect settingsTrigger  = {0, 0, 0, 0};
 static HitRect settingsCloseHit = {0, 0, 0, 0};
 static HitRect settingsLangHit  = {0, 0, 0, 0};
 static HitRect settingsLayoutHit = {0, 0, 0, 0};
+static HitRect settingsLauncherHit = {0, 0, 0, 0};
 static HitRect settingsActionLangHit = {0, 0, 0, 0};
 static HitRect settingsActionLayoutHit = {0, 0, 0, 0};
 static HitRect settingsActionCloseHit = {0, 0, 0, 0};
@@ -894,6 +918,11 @@ static void drawSettings() {
     settingsLayoutHit = { x1 - 8, y1 - 6, 340, 42 };
     y1 += 54;
 
+    row(x1, y1, LX("system", "系统"),
+        LX("Return to launcher", "返回启动器"));
+    settingsLauncherHit = { x1 - 8, y1 - 6, 340, 42 };
+    y1 += 54;
+
     const char* xport = !tama.connected ? LX("offline", "离线")
                       : (bleConnected() && bleSecure()) ? LX("BLE (paired)", "蓝牙（已配对）")
                       : (bleConnected()) ? "BLE"
@@ -945,7 +974,7 @@ static void drawSettings() {
     drawActionBar(barX, by, barW, barH,
                   LX("LANG", "语言"),
                   LX("LAYOUT", "布局"),
-                  LX("CLOSE", "关闭"));
+                  LX("LAUNCHER", "启动器"));
     settingsActionLangHit = { barX, by, cellW, barH };
     settingsActionLayoutHit = { barX + cellW + gap, by, cellW, barH };
     settingsActionCloseHit = { barX + (cellW + gap) * 2, by, cellW, barH };
@@ -989,6 +1018,12 @@ static void drawSettings() {
     row(LX("layout", "布局"), uiLandscape ? LX("Landscape  >  Portrait", "横版  >  竖版")
                                           : LX("Portrait  >  Landscape", "竖版  >  横版"),
         &settingsLayoutHit);
+  }
+
+  {
+    row(LX("system", "系统"),
+        LX("Return to launcher", "返回启动器"),
+        &settingsLauncherHit);
   }
 
   const char* xport = !tama.connected ? LX("offline", "离线")
@@ -1053,7 +1088,7 @@ static void drawSettings() {
   drawActionBar(barX, by, barW, barH,
                 LX("LANG", "语言"),
                 LX("LAYOUT", "布局"),
-                LX("CLOSE", "关闭"));
+                LX("LAUNCHER", "启动器"));
   settingsActionLangHit = { barX, by, cellW, barH };
   settingsActionLayoutHit = { barX + cellW + gap, by, cellW, barH };
   settingsActionCloseHit = { barX + (cellW + gap) * 2, by, cellW, barH };
@@ -1735,7 +1770,19 @@ void loop() {
         lastPartialRefreshMs = 0;
         forceFullRefresh = true;
         redrawPending = true;
-      } else if (hitTest(settingsActionCloseHit) || hitTest(settingsCloseHit) || hitTest(settingsTrigger)) {
+      } else if (hitTest(settingsActionCloseHit)) {
+        settingsOpen = false;
+        lastPartialRefreshMs = 0;
+        forceFullRefresh = true;
+        redrawPending = true;
+        (void)returnToLauncher();
+      } else if (hitTest(settingsLauncherHit)) {
+        settingsOpen = false;
+        lastPartialRefreshMs = 0;
+        forceFullRefresh = true;
+        redrawPending = true;
+        (void)returnToLauncher();
+      } else if (hitTest(settingsCloseHit) || hitTest(settingsTrigger)) {
         settingsOpen = false;
         lastPartialRefreshMs = 0;
         forceFullRefresh = true;
@@ -1873,6 +1920,7 @@ void loop() {
       lastPartialRefreshMs = 0;
       forceFullRefresh = true;
       redrawPending = true;
+      (void)returnToLauncher();
     } else if (inPrompt) {
       char cmd[96];
       snprintf(cmd, sizeof(cmd), "{\"cmd\":\"permission\",\"id\":\"%s\",\"decision\":\"deny\"}", tama.promptId);
@@ -1908,6 +1956,22 @@ void loop() {
       redrawPending = true;
     }
     upLongFired = false;
+  }
+
+  static uint32_t launcherComboSince = 0;
+  static bool launcherComboFired = false;
+  bool launcherComboActive =
+      !inPrompt && !settingsOpen && BTN_APPROVE.isPressed() && BTN_DENY.isPressed();
+  if (launcherComboActive) {
+    if (launcherComboSince == 0) {
+      launcherComboSince = now;
+    } else if (!launcherComboFired && now - launcherComboSince >= 2000) {
+      launcherComboFired = true;
+      (void)returnToLauncher();
+    }
+  } else {
+    launcherComboSince = 0;
+    launcherComboFired = false;
   }
 
   static uint16_t   lastLineGen = 0, lastAsstGen = 0;

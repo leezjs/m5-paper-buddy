@@ -1,0 +1,15 @@
+{
+  "chip": "esp32s3",
+  "compatibility": "switchable",
+  "flash_size": 16777216,
+  "id": "paper-buddy",
+  "install_mode": "runtime-slot",
+  "name": "Paper Buddy",
+  "runtime": {
+    "app_file": "app.bin",
+    "app_offset": 0,
+    "data_file": null
+  },
+  "source_image": "papers3_buddy_firmware.bin",
+  "source_type": "repo-build"
+}

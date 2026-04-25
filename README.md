@@ -196,6 +196,15 @@ pio run -e papers3 -t upload    # 烧固件
 pio run -e papers3 -t uploadfs  # 更新 LittleFS（字体变了才需要）
 ```
 
+### Multi-firmware groundwork
+
+仓库现在新增了两个 PaperS3 构建目标：
+
+- `papers3_buddy` — 使用新 launcher/runtime 分区图的 buddy runtime
+- `papers3_launcher` — 用来验证新 flash 布局的最小 launcher stub
+
+迁移期间，原有的 `papers3` 目标仍然保留。
+
 daemon 改完直接重启：
 
 ```bash

@@ -1,0 +1,15 @@
+{
+  "chip": "esp32s3",
+  "compatibility": "switchable",
+  "flash_size": 16777216,
+  "id": "runtime-sample",
+  "install_mode": "runtime-slot",
+  "name": "runtime-sample",
+  "runtime": {
+    "app_file": "app.bin",
+    "app_offset": 0,
+    "data_file": null
+  },
+  "source_image": "d07ae7625d1e15309886e9e884767ff7.bin",
+  "source_type": "burner-export"
+}
