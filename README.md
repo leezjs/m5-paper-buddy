@@ -23,7 +23,7 @@
 
 ## ✨ 简介
 
-用一块 **PaperS3**（4.7" 电子墨水屏 / 540×960 / 触摸 / ESP32-S3）做你的 Claude Code 伴侣屏。开着多个 Claude Code 窗口的时候，这块墨水屏会**实时镜像**每个 session 的项目、分支、上下文占用、最新回复和活动日志。Claude 要调用工具时，完整的命令 / diff / 内容会**全屏弹出**，等你在屏幕上的触控操作区里确认。
+用一块 **PaperS3**（4.7" 电子墨水屏 / 540×960 / 触摸 / ESP32-S3）做你的 Claude Code 伴侣屏。开着多个 Claude Code 窗口的时候，这块墨水屏会**实时镜像**每个 session 的项目、分支、上下文占用、最新回复和活动日志。Claude 要调用工具时，命令 / diff / 内容会直接显示出来，方便你看它在做什么；普通工具执行**不再要求你手工确认**，只有 `AskUserQuestion` 这类明确提问还会保留触屏回答。
 
 ---
 
@@ -32,9 +32,9 @@
 | | |
 | --- | --- |
 | 📊 **多会话 Dashboard** | 左列显示所有在跑的 Claude Code 窗口，点一下切换 focus；右列显示 model + 上下文窗口占用进度条 |
-| 🔐 **触控审批** | `PreToolUse` 全屏审批卡，完整显示 Bash 命令 / Edit diff / Write 预览；在屏幕下方 `A / B / C` 触控区里完成同意 / 拒绝 / 关闭 |
+| 🔐 **操作展示** | `PreToolUse` 会把 Bash 命令 / Edit diff / Write 预览等内容展示到屏幕上，方便你观察 Claude Code 正在做什么；普通工具调用默认直接放行 |
 | 💬 **触屏回答** | `AskUserQuestion` 最多 4 个选项做成**大按钮**，点一下选项 label 直接回传给 Claude |
-| 🔁 **FIFO 队列** | 多个窗口同时请求审批时，一次弹一个，当前处理完自动弹下一个 |
+| 🔁 **FIFO 队列** | 多个窗口同时弹出 `AskUserQuestion` 时，一次只显示一个，当前处理完自动切到下一个 |
 | 🀄 **中英双语** | 内置 CJK 字体与 UTF-8 文本渲染，UI 支持 EN / 中文 切换；所有 prompt / 回复 / 活动都能显示中文 |
 | 🔌 **双 Transport** | USB 串口（默认、零配置）或 BLE（Nordic UART、macOS 配对 passkey），自动选择 |
 | ↔️ **横竖版切换** | `Settings` 里可在 **Landscape / Portrait** 之间切换，立即生效并写入 NVS，重启后保持 |

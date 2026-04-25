@@ -26,9 +26,10 @@
 A Claude Code sidekick running on a **PaperS3** (4.7" e-ink,
 540×960, touch, ESP32-S3). Sits on your desk and mirrors every
 Claude Code session you have open: project, branch, model, context
-usage, recent activity, Claude's latest reply. When Claude wants to
-run a tool, the full content shows up as a full-screen approval card
-with hardware buttons and touch options.
+usage, recent activity, Claude's latest reply. When Claude runs a
+tool, the Paper shows the command / diff / preview so you can see
+what Claude is doing. Ordinary tool calls no longer require manual
+confirmation; only `AskUserQuestion` stays interactive on-device.
 
 ---
 
@@ -37,9 +38,9 @@ with hardware buttons and touch options.
 | | |
 | --- | --- |
 | 📊 **Multi-session dashboard** | Left column lists every active Claude Code window; tap a row to focus. Right column shows model + context-window progress bar. |
-| 🔐 **Hardware approval** | `PreToolUse` shows a full-screen card with the complete command / diff / preview. **PUSH** approves, **DOWN** denies. DND mode (long-press **UP**) auto-approves for batch tasks. |
+| 🔐 **Tool activity view** | `PreToolUse` shows the command / diff / preview on the Paper so you can see what Claude is doing. Ordinary tool calls are auto-allowed. |
 | 💬 **Touch-answer questions** | Claude's `AskUserQuestion` options render as up to 4 big tap targets; tapping sends the chosen label back as the answer. |
-| 🔁 **FIFO queue** | Multiple windows asking for approval get queued; resolving the current one automatically pops the next. |
+| 🔁 **FIFO queue** | Multiple windows asking `AskUserQuestion` get queued; answering the current one automatically pops the next. |
 | 🀄 **Bilingual UI** | 3.4 MB CJK TTF shipped on LittleFS; toggle **English ↔ 中文** in the Settings page. All prompts, replies, activity lines render Chinese correctly. |
 | 🔌 **Two transports** | USB serial (default, zero-setup) or BLE (Nordic UART, macOS passkey pairing), auto-selected. |
 | ⚙️ **Settings page** | Tap **SETTINGS** (top-right) for transport / battery / sessions / DND / budget / uptime / last message / language toggle. |

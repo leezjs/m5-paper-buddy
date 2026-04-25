@@ -3,18 +3,18 @@
 A Claude Code companion running on a PaperS3 (4.7" e-ink, 540×960,
 touch, ESP32-S3). The Paper mirrors every Claude Code session on your
 desk: project/branch, model, token budget, recent activity, Claude's
-latest reply. Permission prompts route to hardware buttons; Claude's
-`AskUserQuestion` lands as four tappable option buttons.
+latest reply. Tool activity is mirrored to the display without blocking
+execution; Claude's `AskUserQuestion` still lands as four tappable
+option buttons.
 
 ## What it does
 
 - **Real-time dashboard** — top band shows project + branch (or a
   multi-session list), current Claude model, today's output tokens
   with a budget progress bar.
-- **Hardware approval** — PreToolUse hooks display the full tool
-  content (Bash command, Edit diff, Write path + preview, etc.) on a
-  full-screen card. **PUSH** to approve, **DOWN** to deny. DND mode
-  (long-press **UP**) auto-approves so you can run batches unattended.
+- **Tool activity view** — PreToolUse hooks display the tool content
+  (Bash command, Edit diff, Write path + preview, etc.) so you can see
+  what Claude is doing. Ordinary tool calls are auto-allowed.
 - **Touch-answer questions** — `AskUserQuestion` renders its options
   as big tappable cards. Tap one → daemon returns the chosen label to
   Claude, which continues using that answer without asking again in

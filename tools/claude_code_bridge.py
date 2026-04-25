@@ -35,8 +35,10 @@ Usage:
 import argparse
 import asyncio
 import glob
+import heapq
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -72,6 +74,7 @@ BUDGET_LIMIT        = 0
 MODEL_NAME          = ""
 ASSISTANT_MSG       = ""                # global fallback when no session is focused
 SESSION_ASSISTANT   = {}                # sid -> latest assistant text (per-session)
+SESSION_ASSISTANT_AT = {}               # sid -> timestamp of latest assistant text
 FOCUSED_SID         = None              # user-picked focused session (for dashboard)
 TRANSPORT           = None
 BUMP_EVENT          = threading.Event()
@@ -86,8 +89,243 @@ def now_hm():
 
 
 def add_transcript(line: str):
+    line = normalize_display_text(line)[:80]
+    if not line:
+        return
     with STATE_LOCK:
-        TRANSCRIPT.appendleft(f"{now_hm()} {line[:80]}")
+        if TRANSCRIPT and TRANSCRIPT[0][6:] == line:
+            TRANSCRIPT[0] = f"{now_hm()} {line}"
+            return
+        TRANSCRIPT.appendleft(f"{now_hm()} {line}")
+
+
+def normalize_display_text(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def dedupe_consecutive(items):
+    out = []
+    for item in items:
+        if item and (not out or item != out[-1]):
+            out.append(item)
+    return out
+
+
+def collapse_repeated_reply(text: str) -> str:
+    text = normalize_display_text(text)
+    if not text:
+        return ""
+
+    # Some transcript variants duplicate the same prose block verbatim.
+    words = text.split()
+    if len(text) >= 20 and len(words) >= 4 and len(words) % 2 == 0:
+        half = len(words) // 2
+        if words[:half] == words[half:]:
+            text = " ".join(words[:half])
+
+    chunks = re.split(r"(?<=[。！？.!?])\s+", text)
+    chunks = dedupe_consecutive([normalize_display_text(chunk) for chunk in chunks])
+    return " ".join(chunks)
+
+
+def format_activity(tool: str, hint: str) -> str:
+    hint = normalize_display_text(hint)
+    if not hint:
+        return tool
+    return f"{tool}: {hint[:60]}"
+
+
+def extract_text_fragments(content) -> list[str]:
+    if isinstance(content, str):
+        return [content]
+    if not isinstance(content, list):
+        return []
+
+    parts = []
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = block.get("text")
+        if isinstance(text, str) and text.strip():
+            parts.append(text)
+    return parts
+
+
+def read_jsonl_tail(path: str, max_bytes: int = 262144) -> list[str]:
+    if not path or not os.path.exists(path):
+        return []
+    try:
+        sz = os.path.getsize(path)
+        with open(path, "rb") as f:
+            f.seek(max(0, sz - max_bytes))
+            return f.read().decode("utf-8", errors="replace").splitlines()
+    except Exception:
+        return []
+
+
+def parse_event_time(obj: dict):
+    ts = obj.get("timestamp")
+    if not isinstance(ts, str) or not ts:
+        return None
+    try:
+        return datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone()
+    except ValueError:
+        return None
+
+
+def session_recency_key(sid: str) -> float:
+    meta = SESSION_META.get(sid) or {}
+    return max(
+        float(meta.get("checked_at", 0) or 0),
+        float(SESSION_ASSISTANT_AT.get(sid, 0) or 0),
+    )
+
+
+def sync_global_assistant_msg() -> None:
+    global ASSISTANT_MSG
+
+    best_sid = None
+    best_key = (float("-inf"), "")
+    for sid, text in SESSION_ASSISTANT.items():
+        if not text:
+            continue
+        key = (float(SESSION_ASSISTANT_AT.get(sid, 0) or 0), sid)
+        if key > best_key:
+            best_sid = sid
+            best_key = key
+
+    latest = SESSION_ASSISTANT.get(best_sid, "") if best_sid else ""
+    if latest and latest != ASSISTANT_MSG:
+        ASSISTANT_MSG = latest
+        BUMP_EVENT.set()
+
+
+def extract_user_prompt_text(content) -> str:
+    if isinstance(content, str):
+        text = content.strip()
+        if text and not text.startswith("<"):
+            return normalize_display_text(text)
+        return ""
+
+    if not isinstance(content, list):
+        return ""
+
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "text":
+            continue
+        text = str(block.get("text", "")).strip()
+        if text and not text.startswith("<"):
+            return normalize_display_text(text)
+    return ""
+
+
+def extract_tool_activity(msg: dict) -> str:
+    content = msg.get("content")
+    if not isinstance(content, list):
+        return ""
+
+    for block in content:
+        if not isinstance(block, dict) or block.get("type") != "tool_use":
+            continue
+        tool = str(block.get("name", "?"))
+        tin = block.get("input") if isinstance(block.get("input"), dict) else {}
+        return format_activity(tool, hint_from_tool(tool, tin) or body_from_tool(tool, tin))
+    return ""
+
+
+def extract_recent_activity(path: str, limit: int = 8):
+    events = []
+    for line in read_jsonl_tail(path):
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+
+        when = parse_event_time(obj)
+        msg = obj.get("message", obj)
+        text = ""
+        if isinstance(msg, dict):
+            role = msg.get("role")
+            if role == "user":
+                prompt = extract_user_prompt_text(msg.get("content"))
+                if prompt:
+                    text = f"> {prompt[:60]}"
+            elif role == "assistant":
+                text = extract_tool_activity(msg)
+
+        if when and text:
+            events.append((when, text))
+
+    return events[-limit:]
+
+
+def recent_transcript_paths(limit: int = 6) -> list[Path]:
+    root = Path.home() / ".claude" / "projects"
+    if not root.exists():
+        return []
+    try:
+        return heapq.nlargest(limit, root.glob("*/*.jsonl"), key=lambda p: p.stat().st_mtime)
+    except Exception:
+        return []
+
+
+def bootstrap_recent_state() -> None:
+    global ASSISTANT_MSG, MODEL_NAME
+
+    paths = recent_transcript_paths(limit=6)
+    if not paths:
+        return
+
+    recovered = []
+    activity = []
+
+    for path in paths:
+        sid = path.stem
+        SESSION_TRANSCRIPT_PATH.setdefault(sid, str(path))
+        refresh_transcript_state(sid, str(path))
+
+        if sid in SESSION_ASSISTANT:
+            recovered.append(sid)
+
+        if not MODEL_NAME:
+            model = SESSION_MODEL.get(sid)
+            if model:
+                MODEL_NAME = model
+
+        activity.extend(extract_recent_activity(str(path), limit=8))
+
+    if not ASSISTANT_MSG:
+        for path in paths:
+            latest = extract_last_assistant(str(path))
+            if latest:
+                ASSISTANT_MSG = latest
+                break
+
+    if activity:
+        activity.sort(key=lambda item: item[0])
+        compact = []
+        for when, text in activity:
+            text = normalize_display_text(text)[:80]
+            if not text:
+                continue
+            if compact and compact[-1][1] == text:
+                compact[-1] = (when.strftime("%H:%M"), text)
+                continue
+            compact.append((when.strftime("%H:%M"), text))
+        compact = compact[-TRANSCRIPT.maxlen:]
+        with STATE_LOCK:
+            TRANSCRIPT.clear()
+            for hm, text in compact:
+                TRANSCRIPT.appendleft(f"{hm} {text}")
+
+    if ASSISTANT_MSG or TRANSCRIPT:
+        log("[bootstrap] replies=%u activity=%u" % (
+            len(recovered),
+            len(TRANSCRIPT),
+        ))
 
 
 # -----------------------------------------------------------------------------
@@ -622,23 +860,19 @@ def build_heartbeat() -> dict:
         # 1. User tap (FOCUSED_SID) if still valid
         # 2. Session that raised the current approval
         # 3. Most recently-active running session
+        # 4. Most recently-seen session metadata
+        # 5. Global latest assistant reply fallback
         sid = None
         if FOCUSED_SID and FOCUSED_SID in SESSION_META:
             sid = FOCUSED_SID
         elif ACTIVE_PROMPT and ACTIVE_PROMPT.get("session_id"):
             sid = ACTIVE_PROMPT["session_id"]
         elif SESSIONS_RUNNING:
-            sid = next(iter(SESSIONS_RUNNING))
+            sid = max(SESSIONS_RUNNING, key=session_recency_key)
         elif SESSION_META:
-            sid = max(SESSION_META, key=lambda s: SESSION_META[s].get("checked_at", 0))
+            sid = max(SESSION_META, key=session_recency_key)
         elif SESSIONS_TOTAL:
-            sid = next(iter(SESSIONS_TOTAL))
-        elif SESSION_ASSISTANT:
-            sid = next(iter(SESSION_ASSISTANT))
-        elif SESSION_CONTEXT:
-            sid = next(iter(SESSION_CONTEXT))
-        elif SESSION_MODEL:
-            sid = next(iter(SESSION_MODEL))
+            sid = max(SESSIONS_TOTAL, key=session_recency_key)
 
         if sid and sid in SESSION_META:
             m = SESSION_META[sid]
@@ -816,7 +1050,6 @@ def resolve_transcript_path(sid: str, cwd: str = "") -> str:
 
 
 def refresh_transcript_state(sid: str, tp: str) -> None:
-    global ASSISTANT_MSG
     if not sid or not tp or not os.path.exists(tp):
         return
 
@@ -827,14 +1060,13 @@ def refresh_transcript_state(sid: str, tp: str) -> None:
             SESSION_MODEL[sid] = sm
             BUMP_EVENT.set()
 
-    latest = extract_last_assistant(tp)
+    latest, latest_at = extract_last_assistant_entry(tp)
     if latest:
         if SESSION_ASSISTANT.get(sid) != latest:
             SESSION_ASSISTANT[sid] = latest
             BUMP_EVENT.set()
-        if latest != ASSISTANT_MSG:
-            ASSISTANT_MSG = latest
-            BUMP_EVENT.set()
+        SESSION_ASSISTANT_AT[sid] = latest_at
+        sync_global_assistant_msg()
 
     ctx = extract_session_context(tp)
     if SESSION_CONTEXT.get(sid) != ctx:
@@ -842,9 +1074,9 @@ def refresh_transcript_state(sid: str, tp: str) -> None:
         BUMP_EVENT.set()
 
 
-def extract_last_assistant(path: str) -> str:
+def extract_last_assistant_entry(path: str) -> tuple[str, float]:
     if not path or not os.path.exists(path):
-        return ""
+        return "", 0.0
     try:
         sz = os.path.getsize(path)
         with open(path, "rb") as f:
@@ -857,24 +1089,27 @@ def extract_last_assistant(path: str) -> str:
                 continue
             try: obj = json.loads(line)
             except json.JSONDecodeError: continue
+            when = parse_event_time(obj)
             msg = obj.get("message", obj)
             if not isinstance(msg, dict): continue
             if msg.get("role") != "assistant": continue
-            content = msg.get("content")
-            text = ""
-            if isinstance(content, str):
-                text = content
-            elif isinstance(content, list):
-                for block in content:
-                    if isinstance(block, dict) and block.get("type") == "text":
-                        text = block.get("text", "")
-                        if text: break
-            text = (text or "").strip()
+            parts = [
+                normalize_display_text(text)
+                for text in extract_text_fragments(msg.get("content"))
+            ]
+            parts = dedupe_consecutive(parts)
+            text = collapse_repeated_reply(" ".join(parts))
             if text:
-                return " ".join(text.split())[:220]
+                ts = when.timestamp() if when else os.path.getmtime(path)
+                return text[:220], ts
     except Exception as e:
         log(f"[transcript] error: {e}")
-    return ""
+    return "", 0.0
+
+
+def extract_last_assistant(path: str) -> str:
+    text, _ = extract_last_assistant_entry(path)
+    return text
 
 
 # -----------------------------------------------------------------------------
@@ -966,44 +1201,52 @@ class HookHandler(BaseHTTPRequestHandler):
         return {}
 
     def _posttool(self, p):
-        tool = p.get("tool_name", "?")
-        add_transcript(f"{tool} done"); BUMP_EVENT.set()
+        # Ordinary tool activity is already mirrored at PreToolUse with
+        # enough detail for the Paper UI. Don't append a second low-signal
+        # "... done" line for every tool execution.
         return {}
 
     def _pretool(self, p):
-        global ACTIVE_PROMPT
         sid  = p.get("session_id", "")
         tool = p.get("tool_name", "?")
         tin  = p.get("tool_input") or {}
-
-        # Sessions running with --dangerously-skip-permissions (or the
-        # equivalent in-session toggle) already opted out of permission
-        # prompts. Mirror that here — don't block the hook for 30s on
-        # every tool call just to show a card Claude Code would ignore.
-        # Still emit a short transcript line so the Paper shows activity.
-        if p.get("permission_mode") == "bypassPermissions":
-            add_transcript(f"{tool} (bypass)")
-            BUMP_EVENT.set()
-            return {"hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "permissionDecisionReason": "bypass-permissions mode",
-            }}
-
         hint = hint_from_tool(tool, tin)
         body = body_from_tool(tool, tin)
 
-        kind = "question" if tool == "AskUserQuestion" else "permission"
-        option_labels = []
-        if kind == "question":
-            qs = tin.get("questions")
-            if isinstance(qs, list) and qs and isinstance(qs[0], dict):
-                for o in (qs[0].get("options") or [])[:4]:
-                    option_labels.append(str(o.get("label")) if isinstance(o, dict) else str(o))
-            else:
-                for o in (tin.get("options") or [])[:4]:
-                    option_labels.append(str(o.get("label")) if isinstance(o, dict) else str(o))
+        if tool != "AskUserQuestion":
+            # Display-only mode for tool execution: the Paper mirrors the
+            # action Claude is about to take, but never blocks execution
+            # waiting for device-side confirmation.
+            add_transcript(format_activity(tool, hint or body))
+            BUMP_EVENT.set()
 
+            if p.get("permission_mode") == "bypassPermissions":
+                return {"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "bypass-permissions mode",
+                }}
+
+            return {"hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "permissionDecisionReason": "Displayed on M5Paper; no device confirmation required",
+            }}
+
+        kind = "question"
+        option_labels = []
+        qs = tin.get("questions")
+        if isinstance(qs, list) and qs and isinstance(qs[0], dict):
+            for o in (qs[0].get("options") or [])[:4]:
+                option_labels.append(str(o.get("label")) if isinstance(o, dict) else str(o))
+        else:
+            for o in (tin.get("options") or [])[:4]:
+                option_labels.append(str(o.get("label")) if isinstance(o, dict) else str(o))
+
+        # Display-only mode: the Paper mirrors the action Claude is about
+        # to take for ordinary tools. Question prompts still go through the
+        # existing device-side selection flow.
+        add_transcript(format_activity(tool, hint or body))
         prompt_id = f"req_{int(time.time() * 1000)}_{os.getpid()}"
         event = threading.Event()
         holder = {"event": event, "decision": None}
@@ -1018,9 +1261,6 @@ class HookHandler(BaseHTTPRequestHandler):
         with STATE_LOCK:
             SESSIONS_WAITING.add(sid)
             PENDING_PROMPTS[prompt_id] = prompt_obj
-            # FIFO: oldest pending is what's on screen. If nothing active,
-            # this new one takes the slot; otherwise it just joins the
-            # queue and gets its turn after earlier prompts resolve.
             if ACTIVE_PROMPT is None:
                 ACTIVE_PROMPT = prompt_obj
         BUMP_EVENT.set()
@@ -1028,8 +1268,6 @@ class HookHandler(BaseHTTPRequestHandler):
         try:
             got = event.wait(timeout=30)
             decision = holder["decision"] if got else None
-            # Hold the card briefly after an option tap so the inverted-button
-            # feedback paints before the next heartbeat clears the prompt.
             if isinstance(decision, str) and decision.startswith("option:"):
                 time.sleep(0.6)
         finally:
@@ -1038,9 +1276,6 @@ class HookHandler(BaseHTTPRequestHandler):
                 SESSIONS_WAITING.discard(sid)
                 PENDING_PROMPTS.pop(prompt_id, None)
                 if ACTIVE_PROMPT and ACTIVE_PROMPT["id"] == prompt_id:
-                    # FIFO: advance to the NEXT queued prompt (oldest
-                    # remaining = first insertion in dict). Clear back
-                    # to dashboard if none are left.
                     ACTIVE_PROMPT = next(iter(PENDING_PROMPTS.values()), None)
             BUMP_EVENT.set()
 
@@ -1059,23 +1294,17 @@ class HookHandler(BaseHTTPRequestHandler):
                 ),
             }}
 
-        if decision == "once":
-            add_transcript(f"{tool} allow"); BUMP_EVENT.set()
-            return {"hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "permissionDecisionReason": "Approved on M5Paper",
-            }}
         if decision == "deny":
             add_transcript(f"{tool} deny"); BUMP_EVENT.set()
-            reason = ("The user cancelled this question on the M5Paper "
-                      "buddy without answering. Ask them directly in the "
-                      "terminal instead.") if kind == "question" else "Denied on M5Paper"
             return {"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "deny",
-                "permissionDecisionReason": reason,
+                "permissionDecisionReason": (
+                    "The user cancelled this question on the M5Paper buddy "
+                    "without answering. Ask them directly in the terminal instead."
+                ),
             }}
+
         add_transcript(f"{tool} timeout"); BUMP_EVENT.set()
         return {}
 
@@ -1133,6 +1362,8 @@ def main():
         TRANSPORT = SerialTransport(args.port, allow_scan=False)
     else:
         TRANSPORT = pick_transport(args.transport)
+
+    bootstrap_recent_state()
 
     # Send the owner + time-sync handshake whenever we (re)connect. For
     # serial, the transport fires on_connect immediately. For BLE, it
