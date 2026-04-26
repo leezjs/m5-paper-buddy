@@ -37,6 +37,7 @@ class FirmwareImportTests(unittest.TestCase):
             )
             self.assertEqual(manifest["compatibility"], "switchable")
             self.assertEqual(manifest["install_mode"], "runtime-slot")
+            self.assertEqual(manifest["name"], "ePub Reader")
             self.assertTrue((package_dir / "app.bin").exists())
 
 

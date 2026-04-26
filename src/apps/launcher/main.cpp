@@ -1,3 +1,5 @@
+#include "bootcfg.h"
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <M5Unified.h>
@@ -133,12 +135,11 @@ bool refreshRuntimeState() {
   LauncherState next = gState;
   const esp_partition_t* launcher = findLauncherPartition();
   const esp_partition_t* runtime = findRuntimePartition();
-  const esp_partition_t* boot = esp_ota_get_boot_partition();
   const esp_partition_t* running = esp_ota_get_running_partition();
 
   next.runtimePresent = partitionHasAppImage(runtime);
   next.runtimeAddress = runtime ? runtime->address : 0;
-  next.bootTargetRuntime = runtime && boot && runtime->address == boot->address;
+  next.bootTargetRuntime = runtimeOnceBootRequested();
   next.runningLauncher =
       launcher && running && launcher->address == running->address;
 
@@ -427,6 +428,15 @@ void redrawWithStatus(const char* text) {
 }
 
 void rebootLauncher() {
+  esp_err_t rc = clearRuntimeBootRequest();
+  if (rc != ESP_OK) {
+    char msg[96];
+    snprintf(msg, sizeof(msg), "bootcfg clear failed: 0x%x",
+             static_cast<unsigned>(rc));
+    redrawWithStatus(msg);
+    return;
+  }
+
   const esp_partition_t* otadata = esp_partition_find_first(
       ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, nullptr);
   if (otadata == nullptr) {
@@ -434,7 +444,7 @@ void rebootLauncher() {
     return;
   }
 
-  esp_err_t rc = esp_partition_erase_range(otadata, 0, otadata->size);
+  rc = esp_partition_erase_range(otadata, 0, otadata->size);
   if (rc != ESP_OK) {
     char msg[96];
     snprintf(msg, sizeof(msg), "otadata erase failed: 0x%x",
@@ -459,10 +469,10 @@ void bootRuntime() {
     return;
   }
 
-  esp_err_t rc = esp_ota_set_boot_partition(runtime);
+  esp_err_t rc = writeRuntimeOnceBootRequest();
   if (rc != ESP_OK) {
     char msg[96];
-    snprintf(msg, sizeof(msg), "Boot switch failed: 0x%x",
+    snprintf(msg, sizeof(msg), "Boot request failed: 0x%x",
              static_cast<unsigned>(rc));
     redrawWithStatus(msg);
     return;
@@ -553,13 +563,13 @@ bool installSelectedPackage() {
   }
 
   showInstallProgress(pkg.name[0] ? pkg.name : pkg.id,
-                      "Switching boot target",
+                      "Writing boot request",
                       100);
-  rc = esp_ota_set_boot_partition(runtime);
+  rc = writeRuntimeOnceBootRequest();
   if (rc != ESP_OK) {
     gInstall.active = false;
     char msg[96];
-    snprintf(msg, sizeof(msg), "Boot switch failed: 0x%x",
+    snprintf(msg, sizeof(msg), "Boot request failed: 0x%x",
              static_cast<unsigned>(rc));
     redrawWithStatus(msg);
     return false;

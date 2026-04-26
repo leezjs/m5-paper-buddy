@@ -9,6 +9,11 @@ from pathlib import Path
 from firmware_inspect import inspect_image
 
 
+DISPLAY_NAME_OVERRIDES = {
+    "d07ae7625d1e15309886e9e884767ff7.bin": "ePub Reader",
+}
+
+
 def classify(report: dict[str, object]) -> tuple[str, str]:
     runtime = report["runtime_candidate"]
     partitions = report["partition_table"]
@@ -30,9 +35,10 @@ def build_manifest(
     package_id: str, image_path: Path, report: dict[str, object]
 ) -> dict[str, object]:
     compatibility, install_mode = classify(report)
+    display_name = DISPLAY_NAME_OVERRIDES.get(image_path.name, package_id)
     return {
         "id": package_id,
-        "name": package_id,
+        "name": display_name,
         "source_type": "burner-export",
         "chip": report["chip"],
         "flash_size": 16777216,

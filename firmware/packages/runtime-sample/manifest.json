@@ -4,7 +4,7 @@
   "flash_size": 16777216,
   "id": "runtime-sample",
   "install_mode": "runtime-slot",
-  "name": "runtime-sample",
+  "name": "ePub Reader",
   "runtime": {
     "app_file": "app.bin",
     "app_offset": 0,
