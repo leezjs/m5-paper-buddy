@@ -144,9 +144,11 @@ are automatic.
 ## 💰 Context budget
 
 The progress bar shows the **currently-focused session's**
-context-window usage divided by a limit, computed from the last
-assistant message's `usage.input_tokens + output_tokens` in the
-session's transcript JSONL.
+context-window usage divided by a limit, computed from the latest
+assistant usage footprint in the session transcript JSONL:
+`input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens`.
+Progress-wrapped assistant events are also considered so the bar tracks
+the CLI more closely while a turn is still running.
 
 Default limit is 200K (Claude 4.6 standard context). For the 1M-context
 4.7 beta:

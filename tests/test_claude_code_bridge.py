@@ -108,6 +108,68 @@ class ClaudeCodeBridgeTests(unittest.TestCase):
         expected_hm = self.bridge.parse_event_time(latest_record).strftime("%H:%M")
         self.assertEqual(list(self.bridge.TRANSCRIPT), [f"{expected_hm} > repeat me"])
 
+    def test_extract_session_context_counts_cached_tokens(self):
+        transcript = self.transcript_path("context")
+        write_jsonl(
+            transcript,
+            [
+                {
+                    "timestamp": "2026-04-24T10:05:00Z",
+                    "message": {
+                        "role": "assistant",
+                        "usage": {
+                            "input_tokens": 7,
+                            "cache_creation_input_tokens": 120,
+                            "cache_read_input_tokens": 3400,
+                            "output_tokens": 33,
+                        },
+                    },
+                }
+            ],
+        )
+
+        self.assertEqual(self.bridge.extract_session_context(str(transcript)), 3560)
+
+    def test_extract_session_context_uses_latest_progress_assistant_usage(self):
+        transcript = self.transcript_path("progress-context")
+        write_jsonl(
+            transcript,
+            [
+                {
+                    "timestamp": "2026-04-24T10:05:00Z",
+                    "message": {
+                        "role": "assistant",
+                        "usage": {
+                            "input_tokens": 5,
+                            "cache_creation_input_tokens": 100,
+                            "cache_read_input_tokens": 2000,
+                            "output_tokens": 20,
+                        },
+                    },
+                },
+                {
+                    "timestamp": "2026-04-24T10:06:00Z",
+                    "type": "progress",
+                    "data": {
+                        "message": {
+                            "type": "assistant",
+                            "message": {
+                                "role": "assistant",
+                                "usage": {
+                                    "input_tokens": 11,
+                                    "cache_creation_input_tokens": 200,
+                                    "cache_read_input_tokens": 5000,
+                                    "output_tokens": 44,
+                                },
+                            },
+                        }
+                    },
+                },
+            ],
+        )
+
+        self.assertEqual(self.bridge.extract_session_context(str(transcript)), 5255)
+
 
 if __name__ == "__main__":
     unittest.main()

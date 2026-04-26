@@ -138,7 +138,7 @@ claude_code_bridge.py (~600 行)
 │   ├── SESSION_META     dict[sid → {cwd, project, branch, dirty, checked_at}]
 │   ├── SESSION_ASSISTANT dict[sid → 最近 assistant 文本]
 │   ├── SESSION_MODEL     dict[sid → "Opus 4.7" 等]
-│   ├── SESSION_CONTEXT   dict[sid → input+output tokens]
+│   ├── SESSION_CONTEXT   dict[sid → full assistant usage footprint]
 │   ├── PENDING_PROMPTS   dict[prompt_id → prompt_obj]   # FIFO 队列
 │   ├── ACTIVE_PROMPT     队首指针
 │   └── FOCUSED_SID       用户 tap 的 session
@@ -148,7 +148,7 @@ claude_code_bridge.py (~600 行)
 └── Transcript 解析
     ├── extract_last_assistant  最近 assistant 文本
     ├── extract_session_model   model 字段（hook payload 不带，在 transcript 里）
-    └── extract_session_context input_tokens + output_tokens（≈ 上下文占用）
+    └── extract_session_context cached/direct input + output（≈ 上下文占用）
 ```
 
 ### 3.2 并发模型
@@ -357,7 +357,7 @@ ESP32 Arduino 的 LittleFS 驱动识别的是 `subtype spiffs`（历史原因）
 | BLE 连上后第一波写全 timeout | `on_connect` 在 asyncio loop 线程调用同步 `write()` → `run_coroutine_threadsafe` 自己等自己死锁 | 回调另起线程跑 |
 | `pio uploadfs` 报 "Bad CPU type" | PlatformIO 自带 `mklittlefs` 是 x86_64 binary | `brew install mklittlefs` + 替换 symlink（安装脚本自动处理） |
 | 模型栏显示成一条竖线 | `tama.modelName` 空，em dash "—" fallback 在 GenSenRounded 里渲染得贴着列分隔线 | 空时不画 fallback；且 model 改从 transcript assistant 消息里扒 |
-| 进度条卡 0% / 显示 2.5M/1M | 跨 session 累加 output tokens 无意义 | 改成 focused session **当前上下文**（最后一轮 input+output） |
+| 进度条卡 0% / 显示 2.5M/1M | 跨 session 累加 output tokens 无意义 | 改成 focused session **当前上下文**（最新 assistant usage 的 cached/direct input + output） |
 | 触屏 tap 不灵 | 用 `getFingerNum()` 判抬起，它不归零 | 改用 `isFingerUp()` |
 | 接 Claude Code bypass 模式时每个 bash 卡 30s | `permission_mode: bypassPermissions` 但 hook 照样 block | daemon 识别该模式直接回 allow |
 | 多个 PreToolUse 并发时只看到最新的 | 全局 `ACTIVE_PROMPT` 被后来者覆盖 | 改 FIFO 队列，一次一个，自动推进 |

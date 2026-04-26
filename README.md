@@ -132,7 +132,7 @@ BLE 首次连接会触发 macOS 系统配对对话框，Paper 屏幕上显示 6 
 
 ## 💰 上下文预算
 
-屏幕上的进度条显示 **当前 focus 的 session 的上下文窗口占用量** ÷ 上限，读取自 session transcript JSONL 里最后一条 assistant 消息的 `usage.input_tokens + output_tokens`。
+屏幕上的进度条显示 **当前 focus 的 session 的上下文窗口占用量** ÷ 上限，读取自 session transcript JSONL 里最新 assistant usage 的总占用：`input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens`。如果 transcript 先写入的是 progress 包装的 assistant 事件，也会用它来更新。
 
 默认上限 200K（Claude 4.6 标准上下文）。要用 1M 上下文的 4.7 beta：
 

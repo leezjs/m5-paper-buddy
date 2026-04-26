@@ -10,8 +10,8 @@ option buttons.
 ## What it does
 
 - **Real-time dashboard** — top band shows project + branch (or a
-  multi-session list), current Claude model, today's output tokens
-  with a budget progress bar.
+  multi-session list), current Claude model, and the focused session's
+  current context-window usage with a budget progress bar.
 - **Tool activity view** — PreToolUse hooks display the tool content
   (Bash command, Edit diff, Write path + preview, etc.) so you can see
   what Claude is doing. Ordinary tool calls are auto-allowed.
@@ -78,10 +78,10 @@ BUDDY_TRANSPORT=serial /buddy-start
 
 ## Budget bar
 
-Set `BUDDY_BUDGET=1000000` to show a daily token budget bar on the Paper.
-Zero (default) hides the bar. Token usage is computed by tailing each
-session's `transcript_path` and summing `usage.output_tokens` across all
-assistant messages.
+Set `BUDDY_BUDGET=1000000` to show a context-window budget bar on the Paper.
+Zero (default) hides the bar. The displayed usage comes from the focused
+session's latest assistant usage footprint in `transcript_path`:
+`input_tokens + cache_creation_input_tokens + cache_read_input_tokens + output_tokens`.
 
 ## Files
 

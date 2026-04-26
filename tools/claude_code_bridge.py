@@ -173,6 +173,45 @@ def parse_event_time(obj: dict):
         return None
 
 
+def assistant_messages_from_record(obj: dict) -> list[dict]:
+    messages = []
+
+    data = obj.get("data")
+    if isinstance(data, dict):
+        progress = data.get("message")
+        if isinstance(progress, dict):
+            nested = progress.get("message")
+            if isinstance(nested, dict) and nested.get("role") == "assistant":
+                messages.append(nested)
+
+    msg = obj.get("message")
+    if isinstance(msg, dict) and msg.get("role") == "assistant":
+        messages.append(msg)
+
+    if obj.get("role") == "assistant":
+        messages.append(obj)
+
+    return messages
+
+
+def context_tokens_from_usage(usage: dict) -> int:
+    # Claude Code splits the effective prompt footprint across direct
+    # input tokens and cache read/write buckets. The CLI context meter
+    # reflects the full prompt plus current output, so mirror that sum.
+    total = 0
+    for key in (
+        "input_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+        "output_tokens",
+    ):
+        try:
+            total += int(usage.get(key, 0) or 0)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
 def session_recency_key(sid: str) -> float:
     meta = SESSION_META.get(sid) or {}
     return max(
@@ -948,9 +987,10 @@ def short_model(full: str) -> str:
 
 def extract_session_context(path: str) -> int:
     """Return the session's CURRENT context-window usage, approximated
-    as (last assistant turn's input_tokens + output_tokens). Hook-scope
-    "tokens today" across all sessions isn't useful to a user — they
-    want to see how full the context window for THIS session is.
+    as the latest assistant usage footprint visible in the transcript.
+    Claude Code records cached prompt tokens separately, and progress
+    events can arrive before the final top-level assistant append, so
+    we sum the cached/direct buckets from the newest assistant record.
     """
     if not path or not os.path.exists(path):
         return 0
@@ -965,17 +1005,10 @@ def extract_session_context(path: str) -> int:
             if not line or not line.startswith("{"): continue
             try: obj = json.loads(line)
             except json.JSONDecodeError: continue
-            msg = obj.get("message", obj)
-            if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                continue
-            usage = msg.get("usage")
-            if isinstance(usage, dict):
-                inp = int(usage.get("input_tokens", 0) or 0)
-                out = int(usage.get("output_tokens", 0) or 0)
-                # input_tokens already accounts for the rolled-up
-                # conversation state (cache-read counted separately but
-                # included in input_tokens as of CC's schema).
-                return inp + out
+            for msg in assistant_messages_from_record(obj):
+                usage = msg.get("usage")
+                if isinstance(usage, dict):
+                    return context_tokens_from_usage(usage)
     except Exception:
         pass
     return 0
@@ -1002,12 +1035,10 @@ def extract_session_model(path: str) -> str:
             if not line or not line.startswith("{"): continue
             try: obj = json.loads(line)
             except json.JSONDecodeError: continue
-            msg = obj.get("message", obj)
-            if not isinstance(msg, dict) or msg.get("role") != "assistant":
-                continue
-            m = msg.get("model")
-            if isinstance(m, str) and m:
-                return m
+            for msg in assistant_messages_from_record(obj):
+                m = msg.get("model")
+                if isinstance(m, str) and m:
+                    return m
     except Exception:
         pass
     return ""
